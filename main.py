@@ -1,10 +1,13 @@
 """
-main.py — Bot Telegram Sourcing Luxe (version corrigée)
+main.py — Bot Telegram Sourcing Luxe
+Fonctionne sur Render Web Service gratuit (port 10000)
 """
 
 import logging
 import asyncio
+import threading
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -31,6 +34,23 @@ last_scan_results: list[dict] = []
 PLATFORM_EMOJI = {"Vinted": "🟢", "Vestiaire Collective": "⚫", "eBay": "🔵", "Leboncoin": "🟠"}
 TIER_LABEL = {"T1": "⭐ Sartorial", "T2": "✦ Grand luxe", "T3": "◆ Luxe"}
 
+
+# ── Serveur HTTP minimal (requis par Render Web Service) ──
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot actif")
+    def log_message(self, *args):
+        pass
+
+def run_health_server():
+    server = HTTPServer(("0.0.0.0", 10000), HealthHandler)
+    server.serve_forever()
+
+
+# ── Filtrage ──────────────────────────────────────────────
+
 def _has_forbidden_material(item):
     text = (item.get("title", "") + " " + item.get("description", "")).lower()
     return any(m in text for m in FORBIDDEN_MATERIALS)
@@ -44,10 +64,10 @@ def _size_ok(item):
 def _enrich(item):
     tier = get_tier(item.get("brand", ""))
     buy  = item["price"]
-    item["tier"] = tier
+    item["tier"]           = tier
     item["sell_estimated"] = estimated_sell_price(buy, tier)
-    item["margin_pct"] = margin_pct(buy, tier)
-    item["pepite"] = is_pepite(buy, tier)
+    item["margin_pct"]     = margin_pct(buy, tier)
+    item["pepite"]         = is_pepite(buy, tier)
     return item
 
 def filter_and_enrich(items):
@@ -58,6 +78,9 @@ def filter_and_enrich(items):
         if db.is_seen(it["url"]): continue
         out.append(_enrich(it))
     return out
+
+
+# ── Formatage ─────────────────────────────────────────────
 
 def format_item_message(item):
     pep  = "🔥 *PÉPITE DÉTECTÉE* 🔥\n\n" if item["pepite"] else ""
@@ -77,6 +100,9 @@ def item_keyboard(item):
         InlineKeyboardButton("⭐ Favori", callback_data=f"fav|{item['url']}|{item['title'][:40]}"),
         InlineKeyboardButton("🔗 Ouvrir", url=item["url"]),
     ]])
+
+
+# ── Envoi alerte ──────────────────────────────────────────
 
 async def send_item_alert(app, item):
     text = format_item_message(item)
@@ -98,6 +124,9 @@ async def send_item_alert(app, item):
         except Exception as e2:
             log.error(f"Fallback échoué: {e2}")
 
+
+# ── Scan principal ────────────────────────────────────────
+
 async def run_scan(app, brands=None, silent=False):
     global last_scan_results
     target = brands or ALL_BRANDS
@@ -105,12 +134,16 @@ async def run_scan(app, brands=None, silent=False):
     stats["last_scan"] = datetime.now().strftime("%d/%m/%Y %H:%M")
     if not silent:
         await app.bot.send_message(CHAT_ID,
-            f"🔍 Scan en cours sur {len(target)} marques...\nPlateformes : Vinted · Vestiaire · eBay · Leboncoin")
+            f"🔍 Scan en cours sur {len(target)} marques...\nPlateformes : Vestiaire · eBay · Leboncoin")
     pepites, autres = [], []
     for brand in target:
-        filtered = filter_and_enrich(scrape_all(brand, max_price=2000))
-        for it in filtered:
-            (pepites if it["pepite"] else autres).append(it)
+        try:
+            filtered = filter_and_enrich(scrape_all(brand, max_price=2000))
+            for it in filtered:
+                (pepites if it["pepite"] else autres).append(it)
+        except Exception as e:
+            log.error(f"Erreur scan {brand}: {e}")
+            continue
     pepites.sort(key=lambda x: x["margin_pct"], reverse=True)
     autres.sort(key=lambda x: x["margin_pct"], reverse=True)
     ordered = pepites + autres
@@ -132,6 +165,9 @@ async def run_scan(app, brands=None, silent=False):
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     await run_scan(context.application, silent=True)
 
+
+# ── Commandes ─────────────────────────────────────────────
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👔 *Bot Sourcing Luxe*\n\nTon chat ID : `{update.effective_chat.id}`\n\n"
@@ -142,7 +178,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Scan lancé...")
-    await run_scan(ctx.application)
+    asyncio.create_task(run_scan(ctx.application))
 
 async def cmd_pepites(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     peps = [it for it in last_scan_results if it.get("pepite")]
@@ -211,7 +247,14 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🗑 Retiré", callback_data="noop"),
         ]]))
 
+
+# ── Lancement ─────────────────────────────────────────────
+
 def main():
+    # Démarre le serveur HTTP en arrière-plan (requis par Render)
+    threading.Thread(target=run_health_server, daemon=True).start()
+    log.info("Serveur HTTP démarré sur le port 10000")
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("scan",    cmd_scan))
@@ -221,7 +264,9 @@ def main():
     app.add_handler(CommandHandler("stats",   cmd_stats))
     app.add_handler(CommandHandler("reset",   cmd_reset))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.job_queue.run_repeating(auto_scan_job, interval=SCAN_INTERVAL_MIN * 60, first=30)
+
+    app.job_queue.run_repeating(auto_scan_job, interval=SCAN_INTERVAL_MIN * 60, first=60)
+
     log.info(f"Bot démarré — scan toutes les {SCAN_INTERVAL_MIN} min")
     app.run_polling(drop_pending_updates=True)
 
