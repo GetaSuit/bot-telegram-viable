@@ -1,6 +1,6 @@
 """
-scrapers.py — Vinted · Vestiaire Collective · eBay · Leboncoin
-Version corrigée avec authentification Vinted
+scrapers.py — Version robuste avec APIs publiques
+eBay RSS · Vestiaire · Leboncoin
 """
 
 import re
@@ -8,26 +8,25 @@ import time
 import random
 import logging
 import requests
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
-from config import ALL_BRANDS, SIZES_MEN, SIZES_WOMEN
+from config import SIZES_MEN, SIZES_WOMEN
 
 log = logging.getLogger(__name__)
 
 ALL_SIZES = SIZES_MEN + SIZES_WOMEN
 
-HEADERS_BASE = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept": "application/json, text/html, */*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept-Language": "fr-FR,fr;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
 }
 
 def _sleep():
-    time.sleep(random.uniform(1.5, 3.0))
+    time.sleep(random.uniform(1.0, 2.0))
 
 def _parse_price(text: str) -> float | None:
-    cleaned = re.sub(r"[^\d.,]", "", text).replace(",", ".")
+    cleaned = re.sub(r"[^\d.,]", "", str(text)).replace(",", ".")
     try:
         return float(cleaned)
     except ValueError:
@@ -35,160 +34,213 @@ def _parse_price(text: str) -> float | None:
 
 
 # ─────────────────────────────────────────────────────────────────
-#  VINTED — authentification par cookie de session
+#  EBAY — via flux RSS public (très stable, jamais bloqué)
 # ─────────────────────────────────────────────────────────────────
 
-_vinted_session = None
-_vinted_csrf    = None
-
-def _init_vinted_session():
-    global _vinted_session, _vinted_csrf
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "fr-FR,fr;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    })
-    try:
-        # 1. Charger la page d'accueil pour obtenir les cookies
-        r = session.get("https://www.vinted.fr", timeout=15)
-        # 2. Extraire le CSRF token
-        csrf = None
-        for cookie in session.cookies:
-            if "csrf" in cookie.name.lower():
-                csrf = cookie.value
-                break
-        if not csrf:
-            m = re.search(r'csrf-token["\s]+content="([^"]+)"', r.text)
-            if m:
-                csrf = m.group(1)
-        session.headers.update({
-            "Accept": "application/json, text/plain, */*",
-            "X-CSRF-Token": csrf or "",
-            "Referer": "https://www.vinted.fr/",
-            "Origin": "https://www.vinted.fr",
-        })
-        _vinted_session = session
-        _vinted_csrf    = csrf
-        log.info("Session Vinted initialisée")
-    except Exception as e:
-        log.error(f"Erreur init Vinted: {e}")
-        _vinted_session = session
-
-def _get_vinted_session():
-    global _vinted_session
-    if _vinted_session is None:
-        _init_vinted_session()
-    return _vinted_session
-
-def scrape_vinted(brand: str, max_price: int = 2000) -> list[dict]:
-    session = _get_vinted_session()
+def scrape_ebay(brand: str, max_price: int = 2000) -> list[dict]:
     results = []
     try:
-        url = "https://www.vinted.fr/api/v2/catalog/items"
+        # eBay RSS feed — API publique qui ne bloque jamais
+        url = "https://www.ebay.fr/sch/i.html"
         params = {
-            "search_text": brand,
-            "per_page":    24,
-            "page":        1,
-            "order":       "newest_first",
-            "price_to":    max_price,
+            "_nkw": brand,
+            "_sacat": "0",
+            "_udhi": max_price,
+            "_sop": "10",  # plus récents en premier
+            "LH_ItemCondition": "1000|1500|2000|2500",
+            "_rss": "1",  # format RSS
         }
-        resp = session.get(url, params=params, timeout=15)
+        resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
 
-        # Si 403, on tente de réinitialiser la session
-        if resp.status_code == 403:
-            log.warning(f"Vinted 403 pour {brand} — réinitialisation session")
-            _init_vinted_session()
-            session = _get_vinted_session()
-            resp = session.get(url, params=params, timeout=15)
+        if resp.status_code == 200 and "<rss" in resp.text:
+            # Parser le RSS
+            root = ET.fromstring(resp.text)
+            ns = {"ebay": "urn:ebay:apis:eBLBaseComponents"}
+            for item in root.findall(".//item")[:20]:
+                title = item.findtext("title", "")
+                link  = item.findtext("link", "")
+                desc  = item.findtext("description", "")
 
-        if resp.status_code != 200:
-            log.warning(f"Vinted {brand}: HTTP {resp.status_code}")
-            return []
+                # Extraire le prix depuis la description
+                price_match = re.search(r"(\d+[.,]\d+)\s*EUR", desc)
+                if not price_match:
+                    price_match = re.search(r"EUR\s*(\d+[.,]\d+)", desc)
+                if not price_match:
+                    continue
+                price = _parse_price(price_match.group(1))
+                if not price or price > max_price:
+                    continue
 
-        data = resp.json()
-        for item in data.get("items", []):
-            price_raw = item.get("price", {})
-            price = float(price_raw.get("amount", 0)) if isinstance(price_raw, dict) else 0.0
-            if price <= 0:
-                continue
-            photos    = item.get("photos", [])
-            image_url = photos[0].get("url", "") if photos else ""
-            results.append({
-                "title":       item.get("title", ""),
-                "price":       price,
-                "url":         f"https://www.vinted.fr/items/{item['id']}",
-                "image_url":   image_url,
-                "brand":       item.get("brand_title", brand),
-                "size":        item.get("size_title", ""),
-                "description": item.get("description", ""),
-                "platform":    "Vinted",
-            })
+                # Extraire l'image
+                img_match = re.search(r'src="(https://i\.ebayimg[^"]+)"', desc)
+                image_url = img_match.group(1) if img_match else ""
+
+                results.append({
+                    "title":       title,
+                    "price":       price,
+                    "url":         link,
+                    "image_url":   image_url,
+                    "brand":       brand,
+                    "size":        "",
+                    "description": title,
+                    "platform":    "eBay",
+                })
+        else:
+            # Fallback HTML classique
+            params.pop("_rss", None)
+            resp2 = requests.get(url, params=params, headers=HEADERS, timeout=15)
+            soup  = BeautifulSoup(resp2.text, "html.parser")
+            for item in soup.select(".s-item")[:20]:
+                title_el = item.select_one(".s-item__title")
+                price_el = item.select_one(".s-item__price")
+                link_el  = item.select_one("a.s-item__link")
+                img_el   = item.select_one("img")
+                if not all([title_el, price_el, link_el]):
+                    continue
+                if "Shop on eBay" in (title_el.text or ""):
+                    continue
+                price = _parse_price(price_el.text)
+                if not price or price > max_price:
+                    continue
+                image_url = ""
+                if img_el:
+                    image_url = img_el.get("src") or img_el.get("data-src", "")
+                    if "gif" in image_url or "spinner" in image_url:
+                        image_url = img_el.get("data-src", "")
+                results.append({
+                    "title":       title_el.text.strip(),
+                    "price":       price,
+                    "url":         link_el["href"].split("?")[0],
+                    "image_url":   image_url,
+                    "brand":       brand,
+                    "size":        "",
+                    "description": title_el.text.strip(),
+                    "platform":    "eBay",
+                })
     except Exception as e:
-        log.error(f"Vinted scraper error ({brand}): {e}")
+        log.error(f"eBay error ({brand}): {e}")
     _sleep()
     return results
 
 
 # ─────────────────────────────────────────────────────────────────
-#  VESTIAIRE COLLECTIVE
+#  VESTIAIRE COLLECTIVE — scraping HTML
 # ─────────────────────────────────────────────────────────────────
 
 def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
     results = []
     try:
-        # API de recherche Vestiaire
-        url = "https://search.vestiairecollective.com/v1/product/search"
+        url = f"https://www.vestiairecollective.com/search/?q={requests.utils.quote(brand)}&order=new&priceMax={max_price}"
+        headers = {**HEADERS, "Accept": "text/html,application/xhtml+xml,*/*"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        for card in soup.select("[class*='productCard'], [class*='product-card'], article")[:20]:
+            title_el = card.select_one("[class*='name'], [class*='title'], h2, h3")
+            price_el = card.select_one("[class*='price']")
+            link_el  = card.select_one("a[href]")
+            img_el   = card.select_one("img")
+
+            if not link_el:
+                continue
+
+            title = title_el.text.strip() if title_el else brand
+            price = _parse_price(price_el.text) if price_el else None
+            if not price or price > max_price:
+                continue
+
+            href = link_el.get("href", "")
+            full_url = href if href.startswith("http") else f"https://www.vestiairecollective.com{href}"
+            image_url = ""
+            if img_el:
+                image_url = img_el.get("src") or img_el.get("data-src", "")
+
+            results.append({
+                "title":       title,
+                "price":       price,
+                "url":         full_url,
+                "image_url":   image_url,
+                "brand":       brand,
+                "size":        "",
+                "description": title,
+                "platform":    "Vestiaire Collective",
+            })
+    except Exception as e:
+        log.error(f"Vestiaire error ({brand}): {e}")
+    _sleep()
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────
+#  LEBONCOIN — API interne JSON
+# ─────────────────────────────────────────────────────────────────
+
+def scrape_leboncoin(brand: str, max_price: int = 2000) -> list[dict]:
+    results = []
+    try:
+        url = "https://api.leboncoin.fr/api/adfinder/v1/search"
         payload = {
-            "query": brand,
-            "filters": {"price": {"max": max_price}},
-            "pagination": {"limit": 20, "page": 1},
-            "sort": "new",
-            "country": "FR",
-            "currency": "EUR",
+            "filters": {
+                "category": {"id": "2"},
+                "keywords": {"text": brand, "type": "all"},
+                "price":    {"max": str(max_price)},
+                "shippable": True,
+            },
+            "sort_by":    "time",
+            "sort_order": "desc",
+            "limit":      20,
+            "offset":     0,
         }
         headers = {
-            **HEADERS_BASE,
+            **HEADERS,
             "Content-Type": "application/json",
-            "Referer": "https://www.vestiairecollective.com/",
+            "api_key":      "ba0c2dad52b3585c9a20cd59d9e66f9e",
+            "Origin":       "https://www.leboncoin.fr",
+            "Referer":      "https://www.leboncoin.fr/",
         }
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
 
         if resp.status_code == 200:
             data = resp.json()
-            for item in data.get("items", [])[:20]:
-                price = item.get("price", {}).get("cents", 0) / 100
-                if price <= 0:
+            for ad in data.get("ads", [])[:20]:
+                price = ad.get("price", [None])[0] if ad.get("price") else None
+                if not price or price > max_price:
                     continue
-                link = item.get("link", "")
-                full_url = f"https://www.vestiairecollective.com{link}" if link.startswith("/") else link
+                ad_id    = ad.get("list_id", "")
+                slug     = ad.get("slug", "")
+                full_url = f"https://www.leboncoin.fr/ventes_immobilieres/{ad_id}.htm"
+                if slug:
+                    full_url = f"https://www.leboncoin.fr/{slug}"
+                images   = ad.get("images", {})
+                img_list = images.get("urls", []) if isinstance(images, dict) else []
+                image_url = img_list[0] if img_list else ""
                 results.append({
-                    "title":       item.get("name", ""),
-                    "price":       price,
+                    "title":       ad.get("subject", ""),
+                    "price":       float(price),
                     "url":         full_url,
-                    "image_url":   item.get("pictures", [{}])[0].get("src", "") if item.get("pictures") else "",
-                    "brand":       item.get("brand", {}).get("name", brand),
-                    "size":        item.get("size", {}).get("name", "") if isinstance(item.get("size"), dict) else "",
-                    "description": item.get("name", ""),
-                    "platform":    "Vestiaire Collective",
+                    "image_url":   image_url,
+                    "brand":       brand,
+                    "size":        "",
+                    "description": ad.get("body", ""),
+                    "platform":    "Leboncoin",
                 })
         else:
-            # Fallback scraping HTML
-            html_url = f"https://www.vestiairecollective.com/search/?q={brand}&priceMax={max_price}&order=new"
-            r2 = requests.get(html_url, headers=HEADERS_BASE, timeout=15)
+            # Fallback HTML
+            html_url = "https://www.leboncoin.fr/recherche"
+            params   = {"text": brand, "category": "2", "price": f"0-{max_price}", "shippable": "1"}
+            r2   = requests.get(html_url, params=params, headers=HEADERS, timeout=15)
             soup = BeautifulSoup(r2.text, "html.parser")
-            for card in soup.select("article")[:20]:
-                title_el = card.select_one("h2, [class*='title'], [class*='name']")
-                price_el = card.select_one("[class*='price']")
-                link_el  = card.select_one("a[href]")
+            for card in soup.select("a[data-test-id='ad'], [data-qa-id='aditem_container']")[:20]:
+                title_el = card.select_one("[data-test-id='ad-title'], [data-qa-id='aditem_title']")
+                price_el = card.select_one("[data-test-id='price'], [data-qa-id='aditem_price']")
                 img_el   = card.select_one("img")
-                if not title_el or not price_el or not link_el:
+                if not title_el or not price_el:
                     continue
                 price = _parse_price(price_el.text)
-                if not price:
+                if not price or price > max_price:
                     continue
-                href = link_el["href"]
-                full_url = href if href.startswith("http") else f"https://www.vestiairecollective.com{href}"
+                href     = card.get("href", "")
+                full_url = href if href.startswith("http") else f"https://www.leboncoin.fr{href}"
                 results.append({
                     "title":       title_el.text.strip(),
                     "price":       price,
@@ -197,120 +249,21 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
                     "brand":       brand,
                     "size":        "",
                     "description": title_el.text.strip(),
-                    "platform":    "Vestiaire Collective",
+                    "platform":    "Leboncoin",
                 })
     except Exception as e:
-        log.error(f"Vestiaire scraper error ({brand}): {e}")
+        log.error(f"Leboncoin error ({brand}): {e}")
     _sleep()
     return results
 
 
 # ─────────────────────────────────────────────────────────────────
-#  EBAY FRANCE
-# ─────────────────────────────────────────────────────────────────
-
-def scrape_ebay(brand: str, max_price: int = 2000) -> list[dict]:
-    results = []
-    try:
-        url = "https://www.ebay.fr/sch/i.html"
-        params = {
-            "_nkw":   f"{brand} costume OR veste OR manteau OR blazer",
-            "_sacat": "0",
-            "_udhi":  max_price,
-            "_sop":   "10",
-            "LH_ItemCondition": "1000|1500|2000|2500",
-        }
-        resp = requests.get(url, params=params, headers=HEADERS_BASE, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        for item in soup.select(".s-item")[:20]:
-            title_el = item.select_one(".s-item__title")
-            price_el = item.select_one(".s-item__price")
-            link_el  = item.select_one("a.s-item__link")
-            img_el   = item.select_one("img.s-item__image-img")
-            if not title_el or not price_el or not link_el:
-                continue
-            if "Shop on eBay" in title_el.text:
-                continue
-            price = _parse_price(price_el.text)
-            if not price:
-                continue
-            image_url = img_el.get("src") or img_el.get("data-src", "") if img_el else ""
-            results.append({
-                "title":       title_el.text.strip(),
-                "price":       price,
-                "url":         link_el["href"],
-                "image_url":   image_url,
-                "brand":       brand,
-                "size":        "",
-                "description": title_el.text.strip(),
-                "platform":    "eBay",
-            })
-    except Exception as e:
-        log.error(f"eBay scraper error ({brand}): {e}")
-    _sleep()
-    return results
-
-
-# ─────────────────────────────────────────────────────────────────
-#  LEBONCOIN
-# ─────────────────────────────────────────────────────────────────
-
-def scrape_leboncoin(brand: str, max_price: int = 2000) -> list[dict]:
-    results = []
-    try:
-        url = "https://www.leboncoin.fr/recherche"
-        params = {
-            "text":      brand,
-            "category":  "2",
-            "price":     f"0-{max_price}",
-            "shippable": "1",
-        }
-        headers = {**HEADERS_BASE, "Accept": "text/html,application/xhtml+xml,*/*"}
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        for card in soup.select("a[data-test-id='ad']")[:20]:
-            title_el = card.select_one("[data-test-id='ad-title']")
-            price_el = card.select_one("[data-test-id='price']")
-            img_el   = card.select_one("img")
-            if not title_el or not price_el:
-                continue
-            price = _parse_price(price_el.text)
-            if not price:
-                continue
-            href     = card.get("href", "")
-            full_url = href if href.startswith("http") else f"https://www.leboncoin.fr{href}"
-            results.append({
-                "title":       title_el.text.strip(),
-                "price":       price,
-                "url":         full_url,
-                "image_url":   img_el.get("src", "") if img_el else "",
-                "brand":       brand,
-                "size":        "",
-                "description": title_el.text.strip(),
-                "platform":    "Leboncoin",
-            })
-    except Exception as e:
-        log.error(f"Leboncoin scraper error ({brand}): {e}")
-    _sleep()
-    return results
-
-
-# ─────────────────────────────────────────────────────────────────
-#  DISPATCHER GLOBAL
+#  DISPATCHER
 # ─────────────────────────────────────────────────────────────────
 
 def scrape_all(brand: str, max_price: int = 2000) -> list[dict]:
     results = []
-    results += scrape_vinted(brand, max_price)
-    results += scrape_vestiaire(brand, max_price)
     results += scrape_ebay(brand, max_price)
-    results += scrape_leboncoin(brand, max_price)
-    return results
-def scrape_all(brand: str, max_price: int = 2000) -> list[dict]:
-    results = []
-    results += scrape_ebay(brand, max_price)
-    results += scrape_leboncoin(brand, max_price)
     results += scrape_vestiaire(brand, max_price)
+    results += scrape_leboncoin(brand, max_price)
     return results
