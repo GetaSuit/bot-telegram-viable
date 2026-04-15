@@ -3,7 +3,7 @@
 #  Modifie ce fichier selon tes besoins
 # ============================================================
 
-TELEGRAM_TOKEN = "8773112253:AAEGH6gWCs5ZujwuzKrvsbZ-0fsdAONU9FI"   # @BotFather
+TELEGRAM_TOKEN = "8773112253:AAEGH6gWCs5ZujwuzKrvdbZ-0fsdAONU9FI"   # @BotFather
 CHAT_ID        = 1014790204 # /start dans le bot pour l'obtenir
 
 # Intervalle de scan en minutes
