@@ -8,6 +8,7 @@ CHAT_ID        = 1014790204 # /start dans le bot pour l'obtenir
 
 # Intervalle de scan en minutes
 SCAN_INTERVAL_MIN = 60
+VINTED_ENABLED = False
 
 # ── Tailles recherchées ────────────────────────────────────
 SIZES_MEN   = ["M", "L", "48", "42", "XL"]
