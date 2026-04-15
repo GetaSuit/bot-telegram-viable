@@ -308,4 +308,9 @@ def scrape_all(brand: str, max_price: int = 2000) -> list[dict]:
     results += scrape_ebay(brand, max_price)
     results += scrape_leboncoin(brand, max_price)
     return results
-
+def scrape_all(brand: str, max_price: int = 2000) -> list[dict]:
+    results = []
+    results += scrape_ebay(brand, max_price)
+    results += scrape_leboncoin(brand, max_price)
+    results += scrape_vestiaire(brand, max_price)
+    return results
