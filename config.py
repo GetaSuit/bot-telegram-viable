@@ -3,8 +3,9 @@
 #  Modifie ce fichier selon tes besoins
 # ============================================================
 
-TELEGRAM_TOKEN = "8773112253:AAEGH6gWCs5ZujwuzKrvdbZ-0fsdAONU9FI"   # @BotFather
-CHAT_ID        = 1014790204 # /start dans le bot pour l'obtenir
+import os
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID        = int(os.environ.get("CHAT_ID", "0"))
 
 # Intervalle de scan en minutes
 SCAN_INTERVAL_MIN = 60
