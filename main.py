@@ -219,7 +219,7 @@ async def cmd_marque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 Recherche *{brand}*...", parse_mode=ParseMode.MARKDOWN)
     loop = asyncio.get_event_loop()
     raw = await loop.run_in_executor(None, scrape_all, brand, 2000)
-    filtered = filter_and_enrich(raw)
+    filtered = [_enrich(it) for it in raw if not _has_forbidden_material(it) and not db.is_seen(it["url"])]
     filtered.sort(key=lambda x: x["margin_pct"], reverse=True)
     if not filtered:
         await update.message.reply_text(f"Aucun article pour *{brand}*.", parse_mode=ParseMode.MARKDOWN)
