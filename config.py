@@ -9,8 +9,7 @@ EBAY_CERT_ID = os.environ["EBAY_CERT_ID"]
 # ── Paramètres sourcing
 MIN_PRICE = 70
 MAX_PRICE = 400
-SCAN_INTERVAL_MINUTES = 30
-
+SCAN_INTERVAL_MINUTES = 60  # était 30, passe à 60
 # ── Marques par tier de revente
 TIER1_BRANDS = [
     "Hermès", "Chanel", "Louis Vuitton", "Dior", "Brioni",
