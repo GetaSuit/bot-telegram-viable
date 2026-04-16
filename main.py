@@ -5,7 +5,9 @@ python-telegram-bot 20.6 | Render.com
 
 import logging
 import asyncio
+import threading
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -39,6 +41,26 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────
+# SERVEUR HTTP — KEEP ALIVE RENDER
+# ──────────────────────────────────────────
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass  # silence les logs HTTP
+
+def start_health_server():
+    server = HTTPServer(("0.0.0.0", 10000), HealthHandler)
+    logger.info("🌐 Serveur HTTP keep-alive démarré sur port 10000")
+    server.serve_forever()
+
 
 # ──────────────────────────────────────────
 # HELPERS
@@ -90,6 +112,7 @@ def build_keyboard(item: dict) -> InlineKeyboardMarkup:
         ],
     ])
 
+
 # ──────────────────────────────────────────
 # ENVOI ARTICLE
 # ──────────────────────────────────────────
@@ -126,27 +149,27 @@ async def send_article(bot, item: dict, brand: str):
         except Exception as e2:
             logger.error(f"[send_article] Fallback échoué: {e2}")
 
+
 # ──────────────────────────────────────────
-# SCAN PAR BATCH (anti-spam)
+# SCAN PAR BATCH
 # ──────────────────────────────────────────
 
 _scan_cursor = {"index": 0}
-BATCH_SIZE = 2       # marques par cycle
-MAX_PER_BRAND = 1    # articles max par marque par cycle
+BATCH_SIZE = 2
+MAX_PER_BRAND = 1
 
 async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     start = _scan_cursor["index"]
     batch = BRANDS[start: start + BATCH_SIZE]
     _scan_cursor["index"] = (start + BATCH_SIZE) % len(BRANDS)
 
-    logger.info(f"🔄 Scan batch [{start}→{start+BATCH_SIZE}] : {batch}")
+    logger.info(f"🔄 Scan batch [{start}→{start + BATCH_SIZE}] : {batch}")
     total_sent = 0
 
     for brand in batch:
         try:
             results = search_all_sources(brand)
             new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
-
             for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
@@ -154,13 +177,12 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
                 await send_article(context.bot, item, brand)
                 total_sent += 1
                 await asyncio.sleep(3)
-
         except Exception as e:
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
-
-        await asyncio.sleep(5)  # pause entre marques
+        await asyncio.sleep(5)
 
     logger.info(f"✅ Batch terminé — {total_sent} articles envoyés")
+
 
 # ──────────────────────────────────────────
 # COMMANDES
@@ -169,12 +191,12 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 *Bot Sourcing Luxe actif*\n\n"
-        "📦 Sources : eBay · Vinted · Leboncoin\n"
+        "📦 Sources : eBay · Vinted\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n\n"
         "Commandes :\n"
         "/scan — Scan immédiat\n"
-        "/test\\_sources — Tester les 3 sources\n"
+        "/test\\_sources — Tester les sources\n"
         "/marques — Marques par tier\n"
         "/status — État du bot\n"
         "/help — Aide"
@@ -185,10 +207,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📖 *Aide — Bot Sourcing Luxe*\n\n"
         "/start — Démarrer\n"
-        "/scan — Scan manuel immédiat\n"
-        "/test\\_sources — Diagnostic des sources\n"
+        "/scan — Scan manuel\n"
+        "/test\\_sources — Diagnostic sources\n"
         "/marques — Liste des marques\n"
-        "/status — Infos & état\n"
+        "/status — État\n"
         "/help — Ce message"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -226,7 +248,7 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Test des sources en cours...")
     brand = "Hermès"
     lines = [f"📊 *Diagnostic* — `{brand}` ({MIN_PRICE}€–{MAX_PRICE}€)\n"]
-   for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
+    for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
         try:
             res = fn(brand)
             if res:
@@ -242,8 +264,9 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"\n🕐 {datetime.now().strftime('%H:%M:%S')}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+
 # ──────────────────────────────────────────
-# CALLBACKS BOUTONS INLINE
+# CALLBACKS BOUTONS
 # ──────────────────────────────────────────
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -262,11 +285,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
+
 # ──────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────
 
 def main():
+    # Serveur HTTP keep-alive dans un thread séparé
+    thread = threading.Thread(target=start_health_server, daemon=True)
+    thread.start()
+
     init_db()
     logger.info("🗄️ DB initialisée")
 
@@ -280,8 +308,7 @@ def main():
     app.add_handler(CommandHandler("test_sources", cmd_test_sources))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    job_queue: JobQueue = app.job_queue
-    job_queue.run_repeating(
+    app.job_queue.run_repeating(
         scan_job,
         interval=SCAN_INTERVAL_MINUTES * 60,
         first=30,
@@ -290,6 +317,7 @@ def main():
 
     logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
