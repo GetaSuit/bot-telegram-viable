@@ -1,12 +1,10 @@
 """
-main.py — Bot Telegram de sourcing luxe @BigbigMoneyluxbot
-Stack : python-telegram-bot 20.6 | eBay Browse API | Vinted API | Leboncoin API
-Déployé sur Render.com (Web Service)
+main.py — Bot Telegram sourcing luxe @BigbigMoneyluxbot
+python-telegram-bot 20.6 | Render.com
 """
 
 import logging
 import asyncio
-import os
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -42,10 +40,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────
+# HELPERS
+# ──────────────────────────────────────────
 
-# ──────────────────────────────────────────
-# HELPERS — CALCUL REVENTE & FORMATAGE
-# ──────────────────────────────────────────
+MULTIPLIERS = {"T1": 2.5, "T2": 2.0, "T3": 1.8}
 
 def get_tier(brand: str) -> str:
     if brand in TIER1_BRANDS:
@@ -53,8 +52,6 @@ def get_tier(brand: str) -> str:
     if brand in TIER2_BRANDS:
         return "T2"
     return "T3"
-
-MULTIPLIERS = {"T1": 2.5, "T2": 2.0, "T3": 1.8}
 
 def estimate_resale(price_str: str, brand: str) -> str:
     try:
@@ -69,7 +66,7 @@ def estimate_resale(price_str: str, brand: str) -> str:
             f"✅ Marge brute : +{profit:.0f}€"
         )
     except Exception:
-        return "💰 Prix non calculable"
+        return "💰 Prix non disponible"
 
 def format_article(item: dict, brand: str) -> str:
     title = item.get("title", "Sans titre")
@@ -84,28 +81,23 @@ def format_article(item: dict, brand: str) -> str:
         f"🔗 [Voir l'annonce]({url})"
     )
 
-def build_article_keyboard(item: dict) -> InlineKeyboardMarkup:
-    url = item.get("url", "")
-    keyboard = [
-        [InlineKeyboardButton("🔗 Voir l'annonce", url=url)],
+def build_keyboard(item: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Voir l'annonce", url=item.get("url", ""))],
         [
             InlineKeyboardButton("✅ Intéressant", callback_data="interested"),
             InlineKeyboardButton("❌ Ignorer", callback_data="ignore"),
         ],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
+    ])
 
 # ──────────────────────────────────────────
-# ENVOI D'UN ARTICLE AU CHAT
+# ENVOI ARTICLE
 # ──────────────────────────────────────────
 
 async def send_article(bot, item: dict, brand: str):
-    """Envoie un article formaté dans le canal Telegram."""
     text = format_article(item, brand)
-    keyboard = build_article_keyboard(item)
+    keyboard = build_keyboard(item)
     image = item.get("image")
-
     try:
         if image:
             await bot.send_photo(
@@ -121,11 +113,9 @@ async def send_article(bot, item: dict, brand: str):
                 text=text,
                 parse_mode="Markdown",
                 reply_markup=keyboard,
-                disable_web_page_preview=False,
             )
     except Exception as e:
-        logger.warning(f"[send_article] Erreur envoi '{item.get('title')}': {e}")
-        # Fallback sans image si l'envoi photo échoue
+        logger.warning(f"[send_article] Photo échouée, fallback texte: {e}")
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
@@ -136,93 +126,88 @@ async def send_article(bot, item: dict, brand: str):
         except Exception as e2:
             logger.error(f"[send_article] Fallback échoué: {e2}")
 
+# ──────────────────────────────────────────
+# SCAN PAR BATCH (anti-spam)
+# ──────────────────────────────────────────
 
-# ──────────────────────────────────────────
-# SCAN AUTOMATIQUE (JOB RÉCURRENT)
-# ──────────────────────────────────────────
+_scan_cursor = {"index": 0}
+BATCH_SIZE = 3  # marques scannées par cycle
 
 async def scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """Scanne toutes les marques sur toutes les sources."""
-    logger.info("🔄 Début du scan automatique...")
+    start = _scan_cursor["index"]
+    batch = BRANDS[start: start + BATCH_SIZE]
+    _scan_cursor["index"] = (start + BATCH_SIZE) % len(BRANDS)
+
+    logger.info(f"🔄 Scan batch [{start}→{start + BATCH_SIZE}] : {batch}")
     total_sent = 0
 
-    for brand in BRANDS:
+    for brand in batch:
         try:
             results = search_all_sources(brand)
-            new_results = [r for r in results if not is_already_seen(r.get("url", ""))]
+            new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
 
-            for item in new_results:
+            for item in new_items[:2]:  # max 2 articles par marque par cycle
                 url = item.get("url", "")
                 if url:
                     mark_as_seen(url)
                 await send_article(context.bot, item, brand)
                 total_sent += 1
-                await asyncio.sleep(1.5)  # évite le flood Telegram
+                await asyncio.sleep(2)
 
         except Exception as e:
-            logger.error(f"[scan_job] Erreur marque '{brand}': {e}")
-        
-        await asyncio.sleep(2)  # délai entre marques
+            logger.error(f"[scan_job] Erreur '{brand}': {e}")
 
-    logger.info(f"✅ Scan terminé — {total_sent} nouveaux articles envoyés")
+        await asyncio.sleep(3)
 
+    logger.info(f"✅ Batch terminé — {total_sent} articles envoyés")
     if total_sent == 0:
-        await context.bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"🔄 Scan terminé à {datetime.now().strftime('%H:%M')} — Aucun nouvel article.",
-        )
-
+        logger.info("Aucun nouvel article dans ce batch.")
 
 # ──────────────────────────────────────────
-# COMMANDES BOT
+# COMMANDES
 # ──────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /start"""
     text = (
         "👋 *Bot Sourcing Luxe actif*\n\n"
         "📦 Sources : eBay · Vinted · Leboncoin\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n\n"
-        "Commandes disponibles :\n"
-        "/scan — Lancer un scan maintenant\n"
+        "Commandes :\n"
+        "/scan — Scan immédiat\n"
         "/test\\_sources — Tester les 3 sources\n"
-        "/marques — Voir les marques surveillées\n"
+        "/marques — Marques par tier\n"
         "/status — État du bot\n"
         "/help — Aide"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /help"""
     text = (
         "📖 *Aide — Bot Sourcing Luxe*\n\n"
         "/start — Démarrer\n"
         "/scan — Scan manuel immédiat\n"
-        "/test\\_sources — Diagnostic des 3 sources\n"
+        "/test\\_sources — Diagnostic des sources\n"
         "/marques — Liste des marques\n"
         "/status — Infos & état\n"
         "/help — Ce message"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /status"""
+    progress = _scan_cursor["index"]
     text = (
         "📊 *Statut du bot*\n\n"
-        f"✅ Actif depuis : {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+        f"✅ Heure : {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
         f"🔁 Scan auto toutes les : {SCAN_INTERVAL_MINUTES} min\n"
+        f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🏷️ Marques : {len(BRANDS)}\n"
-        f"📦 Sources : eBay, Vinted, Leboncoin\n"
+        f"🏷️ Marques surveillées : {len(BRANDS)}\n"
+        f"📡 Sources : eBay · Vinted · Leboncoin"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-
 async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /marques — Liste les marques par tier"""
     t1 = "\n".join(f"  · {b}" for b in sorted(TIER1_BRANDS))
     t2 = "\n".join(f"  · {b}" for b in sorted(TIER2_BRANDS))
     t3 = "\n".join(f"  · {b}" for b in sorted(TIER3_BRANDS))
@@ -234,43 +219,29 @@ async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /scan — Scan manuel immédiat"""
-    await update.message.reply_text("🔄 Scan en cours sur toutes les sources...")
-    await scan_job(context)
-    await update.message.reply_text("✅ Scan manuel terminé.")
-
+    await update.message.reply_text("🔄 Scan lancé en arrière-plan...")
+    context.application.job_queue.run_once(scan_job, when=0, name="scan_manuel")
 
 async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /test_sources — Teste chaque source sur une marque pilote"""
     await update.message.reply_text("🔍 Test des sources en cours...")
     brand = "Hermès"
-    lines = [f"📊 *Diagnostic sources* — `{brand}` ({MIN_PRICE}€–{MAX_PRICE}€)\n"]
-
-    tests = [
-        ("eBay", search_ebay),
-        ("Vinted", search_vinted),
-        ("Leboncoin", search_leboncoin),
-    ]
-
-    for name, fn in tests:
+    lines = [f"📊 *Diagnostic* — `{brand}` ({MIN_PRICE}€–{MAX_PRICE}€)\n"]
+    for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted), ("Leboncoin", search_leboncoin)]:
         try:
-            results = fn(brand)
-            if results:
-                sample = results[0]
+            res = fn(brand)
+            if res:
+                sample = res[0]
                 lines.append(
-                    f"✅ *{name}* : {len(results)} résultats\n"
-                    f"   Ex: {sample.get('title', '')[:40]}… — {sample.get('price')}€"
+                    f"✅ *{name}* : {len(res)} résultats\n"
+                    f"   Ex: {str(sample.get('title',''))[:40]}… — {sample.get('price')}€"
                 )
             else:
-                lines.append(f"⚠️ *{name}* : 0 résultat (source vide ou bloquée)")
+                lines.append(f"⚠️ *{name}* : 0 résultat")
         except Exception as e:
-            lines.append(f"❌ *{name}* : erreur — `{str(e)[:80]}`")
-
+            lines.append(f"❌ *{name}* : `{str(e)[:80]}`")
     lines.append(f"\n🕐 {datetime.now().strftime('%H:%M:%S')}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
 
 # ──────────────────────────────────────────
 # CALLBACKS BOUTONS INLINE
@@ -279,64 +250,47 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "interested":
         await query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⭐ Marqué comme intéressant", callback_data="noop")]
-            ])
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⭐ Marqué comme intéressant", callback_data="noop")
+            ]])
         )
     elif query.data == "ignore":
         await query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑️ Ignoré", callback_data="noop")]
-            ])
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Ignoré", callback_data="noop")
+            ]])
         )
 
-
 # ──────────────────────────────────────────
-# POINT D'ENTRÉE PRINCIPAL
+# MAIN
 # ──────────────────────────────────────────
 
 def main():
-    # Initialisation de la base de données anti-doublons
     init_db()
-    logger.info("🗄️ Base de données initialisée")
+    logger.info("🗄️ DB initialisée")
 
-    # Construction de l'application Telegram
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .build()
-    )
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # ── Handlers commandes
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("marques", cmd_marques))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("test_sources", cmd_test_sources))
-
-    # ── Handler boutons inline
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # ── Job récurrent : scan automatique
     job_queue: JobQueue = app.job_queue
     job_queue.run_repeating(
         scan_job,
         interval=SCAN_INTERVAL_MINUTES * 60,
-        first=30,  # premier scan 30s après démarrage
+        first=30,
         name="scan_auto",
     )
 
-    logger.info(
-        f"🚀 Bot démarré — scan toutes les {SCAN_INTERVAL_MINUTES} min | "
-        f"{len(BRANDS)} marques | {MIN_PRICE}€–{MAX_PRICE}€"
-    )
-
+    logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
