@@ -4,10 +4,12 @@ import random
 import logging
 from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
-    EBAY_APP_ID, EBAY_CERT_ID
+    EBAY_APP_ID, EBAY_CERT_ID,
+    TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
 )
 
 logger = logging.getLogger(__name__)
+
 
 # ──────────────────────────────────────────
 # EBAY
@@ -23,7 +25,7 @@ def get_ebay_token():
             "Content-Type": "application/x-www-form-urlencoded",
         },
         data="grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
-        timeout=10
+        timeout=10,
     )
     return r.json().get("access_token")
 
@@ -34,7 +36,6 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         if not token:
             logger.error("[eBay] Token introuvable")
             return []
-
         params = {
             "q": brand,
             "filter": f"price:[{min_price}..{max_price}],currency:EUR,itemLocationCountry:FR",
@@ -45,13 +46,13 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
             "https://api.ebay.com/buy/browse/v1/item_summary/search",
             headers={"Authorization": f"Bearer {token}"},
             params=params,
-            timeout=15
+            timeout=15,
         )
         r.raise_for_status()
         for item in r.json().get("itemSummaries", []):
             results.append({
                 "title": item.get("title"),
-                "price": item.get("price", {}).get("value"),
+                "price": item.get("price", {}).get("value", "?"),
                 "url": item.get("itemWebUrl"),
                 "image": item.get("image", {}).get("imageUrl"),
                 "source": "eBay",
@@ -79,14 +80,18 @@ VINTED_SESSION.headers.update({
 })
 
 def _vinted_init_session():
-    """Initialise les cookies CSRF nécessaires à l'API Vinted."""
     try:
         VINTED_SESSION.get("https://www.vinted.fr", timeout=10)
-        logger.debug("[Vinted] Session initialisée")
         return True
     except Exception as e:
         logger.error(f"[Vinted] Init session: {e}")
         return False
+
+def _parse_vinted_price(price_raw) -> str:
+    """Gère les deux formats : objet {'amount':'120','currency_code':'EUR'} ou string."""
+    if isinstance(price_raw, dict):
+        return str(price_raw.get("amount", "?"))
+    return str(price_raw) if price_raw else "?"
 
 def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
     results = []
@@ -103,23 +108,21 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         r = VINTED_SESSION.get(
             "https://www.vinted.fr/api/v2/catalog/items",
             params=params,
-            timeout=15
+            timeout=15,
         )
         r.raise_for_status()
         data = r.json()
-
         for item in data.get("items", []):
             photo = item.get("photo") or {}
             results.append({
                 "title": item.get("title"),
-                "price": str(item.get("price", "")),
+                "price": _parse_vinted_price(item.get("price")),
                 "url": f"https://www.vinted.fr/items/{item.get('id')}",
                 "image": photo.get("url"),
                 "source": "Vinted",
             })
         logger.info(f"[Vinted] {len(results)} résultats pour '{brand}'")
         time.sleep(random.uniform(1.5, 3.0))
-
     except Exception as e:
         logger.error(f"[Vinted] Erreur '{brand}': {e}")
     return results
@@ -162,26 +165,26 @@ def search_leboncoin(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
             "https://api.leboncoin.fr/finder/search",
             json=payload,
             headers=LBC_HEADERS,
-            timeout=15
+            timeout=15,
         )
         logger.info(f"[LBC] Status HTTP: {r.status_code}")
         r.raise_for_status()
         data = r.json()
-
         for ad in data.get("ads", []):
             images = ad.get("images", {})
             thumb = images.get("thumb_url") or (
                 images.get("urls", [None])[0]
             )
+            price_list = ad.get("price", [])
+            price = str(price_list[0]) if price_list else "?"
             results.append({
                 "title": ad.get("subject"),
-                "price": str(ad.get("price", [0])[0] if ad.get("price") else ""),
+                "price": price,
                 "url": ad.get("url"),
                 "image": thumb,
                 "source": "Leboncoin",
             })
         logger.info(f"[LBC] {len(results)} résultats pour '{brand}'")
-
     except Exception as e:
         logger.error(f"[LBC] Erreur '{brand}': {e}")
     return results
@@ -192,7 +195,6 @@ def search_leboncoin(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
 # ──────────────────────────────────────────
 
 def search_all_sources(brand: str):
-    """Lance les 3 scrapers et retourne une liste fusionnée."""
     all_results = []
     all_results.extend(search_ebay(brand))
     all_results.extend(search_vinted(brand))
