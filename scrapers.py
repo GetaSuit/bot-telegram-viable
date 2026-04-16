@@ -12,6 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────
+# FILTRE DE PERTINENCE
+# ──────────────────────────────────────────
+
+def is_relevant(title: str, brand: str) -> bool:
+    """Vérifie que le titre contient vraiment le nom de la marque."""
+    if not title or not brand:
+        return False
+    return brand.lower() in title.lower()
+
+
+# ──────────────────────────────────────────
 # EBAY
 # ──────────────────────────────────────────
 
@@ -50,14 +61,17 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         )
         r.raise_for_status()
         for item in r.json().get("itemSummaries", []):
+            title = item.get("title", "")
+            if not is_relevant(title, brand):
+                continue
             results.append({
-                "title": item.get("title"),
+                "title": title,
                 "price": item.get("price", {}).get("value", "?"),
                 "url": item.get("itemWebUrl"),
                 "image": item.get("image", {}).get("imageUrl"),
                 "source": "eBay",
             })
-        logger.info(f"[eBay] {len(results)} résultats pour '{brand}'")
+        logger.info(f"[eBay] {len(results)} résultats pertinents pour '{brand}'")
     except Exception as e:
         logger.error(f"[eBay] Erreur '{brand}': {e}")
     return results
@@ -88,7 +102,6 @@ def _vinted_init_session():
         return False
 
 def _parse_vinted_price(price_raw) -> str:
-    """Gère les deux formats : objet {'amount':'120','currency_code':'EUR'} ou string."""
     if isinstance(price_raw, dict):
         return str(price_raw.get("amount", "?"))
     return str(price_raw) if price_raw else "?"
@@ -113,16 +126,19 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         r.raise_for_status()
         data = r.json()
         for item in data.get("items", []):
+            title = item.get("title", "")
+            if not is_relevant(title, brand):
+                continue
             photo = item.get("photo") or {}
             results.append({
-                "title": item.get("title"),
+                "title": title,
                 "price": _parse_vinted_price(item.get("price")),
                 "url": f"https://www.vinted.fr/items/{item.get('id')}",
                 "image": photo.get("url"),
                 "source": "Vinted",
             })
-        logger.info(f"[Vinted] {len(results)} résultats pour '{brand}'")
-        time.sleep(random.uniform(1.5, 3.0))
+        logger.info(f"[Vinted] {len(results)} résultats pertinents pour '{brand}'")
+        time.sleep(random.uniform(2.0, 4.0))
     except Exception as e:
         logger.error(f"[Vinted] Erreur '{brand}': {e}")
     return results
@@ -171,27 +187,28 @@ def search_leboncoin(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         r.raise_for_status()
         data = r.json()
         for ad in data.get("ads", []):
+            title = ad.get("subject", "")
+            if not is_relevant(title, brand):
+                continue
             images = ad.get("images", {})
-            thumb = images.get("thumb_url") or (
-                images.get("urls", [None])[0]
-            )
+            thumb = images.get("thumb_url") or (images.get("urls", [None])[0])
             price_list = ad.get("price", [])
             price = str(price_list[0]) if price_list else "?"
             results.append({
-                "title": ad.get("subject"),
+                "title": title,
                 "price": price,
                 "url": ad.get("url"),
                 "image": thumb,
                 "source": "Leboncoin",
             })
-        logger.info(f"[LBC] {len(results)} résultats pour '{brand}'")
+        logger.info(f"[LBC] {len(results)} résultats pertinents pour '{brand}'")
     except Exception as e:
         logger.error(f"[LBC] Erreur '{brand}': {e}")
     return results
 
 
 # ──────────────────────────────────────────
-# SCRAPER UNIFIÉ
+# UNIFIÉ
 # ──────────────────────────────────────────
 
 def search_all_sources(brand: str):
