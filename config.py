@@ -13,23 +13,36 @@ SCAN_INTERVAL_MINUTES = 60
 
 # ── Mots-clés interdits
 EXCLUDED_KEYWORDS = [
-    "parfum", "eau de", "cologne", "fragrance", "cosmetic",
-    "maquillage", "beauté", "crème", "lotion", "montre", "watch",
-    "bracelet", "collier", "bague", "bijou", "lunettes", "sunglasses",
-    "portefeuille", "wallet", "ceinture", "belt", "chapeau", "hat",
-    "écharpe", "scarf", "gant", "gloves", "chaussette", "sock",
-    "jouet", "toy", "livre", "book", "dvd", "talkie", "imprimante",
-    "phone", "iphone", "samsung", "ordinateur", "laptop",
+    # Parfums
+    "parfum", "eau de", "cologne", "fragrance", "cosmetic", "perfume",
+    "miniature", "spray", "toilette", "deodorant",
+    # Accessoires non ciblés
+    "maquillage", "beauté", "crème", "lotion",
+    "montre", "watch", "bracelet", "collier", "bague", "bijou",
+    "lunettes", "sunglasses", "portefeuille", "wallet",
+    "ceinture", "belt", "chapeau", "hat",
+    "écharpe", "scarf", "foulard", "twilly", "soie", "silk",
+    "gant", "gloves", "chaussette", "sock",
+    # High-tech / divers
+    "jouet", "toy", "livre", "book", "dvd",
+    "talkie", "imprimante", "phone", "iphone", "samsung",
+    "ordinateur", "laptop", "tablette",
 ]
 
 # ── Mots-clés autorisés (au moins un requis)
 ALLOWED_KEYWORDS = [
+    # Vêtements homme
     "veste", "jacket", "blazer", "costume", "suit",
-    "manteau", "coat", "parka", "trench",
-    "sac", "bag", "tote", "cabas", "pochette",
-    "chaussure", "shoe", "sneaker", "boot", "botte", "mocassin",
-    "pantalon", "trouser", "jean",
+    "manteau", "coat", "parka", "trench", "imperméable",
+    "pantalon", "trouser", "jean", "chino",
     "chemise", "shirt", "pull", "sweater", "cardigan",
+    "smoking", "tuxedo",
+    # Chaussures
+    "chaussure", "shoe", "sneaker", "boot", "botte",
+    "mocassin", "loafer", "derby", "oxford",
+    # Sacs
+    "sac", "bag", "tote", "cabas", "pochette", "clutch",
+    "backpack", "sac à dos",
 ]
 
 # ── Marques par tier
