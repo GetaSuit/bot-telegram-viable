@@ -1,11 +1,11 @@
 """
-main.py — Bot Telegram Sourcing Luxe
-Scan en arrière-plan — commandes toujours réactives
+main.py — Bot Telegram Sourcing Luxe (version corrigée boutons + photos)
 """
 
 import logging
 import asyncio
 import threading
+import hashlib
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -30,13 +30,13 @@ log = logging.getLogger(__name__)
 
 stats = {"scans": 0, "articles_found": 0, "pepites_found": 0, "last_scan": None}
 last_scan_results: list[dict] = []
-scan_running = False
+url_store: dict[str, str] = {}  # hash -> url
 
 PLATFORM_EMOJI = {"Vinted": "🟢", "Vestiaire Collective": "⚫", "eBay": "🔵", "Leboncoin": "🟠"}
 TIER_LABEL = {"T1": "⭐ Sartorial", "T2": "✦ Grand luxe", "T3": "◆ Luxe"}
 
 
-# ── Serveur HTTP (requis Render) ──────────────────────────
+# ── Serveur HTTP minimal ──────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -50,6 +50,18 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_health_server():
     HTTPServer(("0.0.0.0", 10000), HealthHandler).serve_forever()
+
+
+# ── Utilitaires ───────────────────────────────────────────
+
+def short_id(url: str) -> str:
+    """Génère un ID court depuis une URL pour les boutons Telegram (max 64 chars)"""
+    h = hashlib.md5(url.encode()).hexdigest()[:12]
+    url_store[h] = url
+    return h
+
+def get_url(h: str) -> str:
+    return url_store.get(h, "")
 
 
 # ── Filtrage ──────────────────────────────────────────────
@@ -89,7 +101,7 @@ def format_item_message(item):
     pep  = "🔥 *PÉPITE DÉTECTÉE* 🔥\n\n" if item["pepite"] else ""
     pl   = PLATFORM_EMOJI.get(item["platform"], "•")
     tier = TIER_LABEL.get(item["tier"], "")
-    msg  = (f"{pep}*{item['title']}*\n\n{pl} {item['platform']}  |  {tier}\n"
+    msg  = (f"{pep}*{item['title'][:100]}*\n\n{pl} {item['platform']}  |  {tier}\n"
             f"💰 Achat : *{item['price']:.0f} €*\n"
             f"📈 Revente estimée : *{item['sell_estimated']} €*\n"
             f"📊 Marge : *+{item['margin_pct']}%*\n")
@@ -99,8 +111,9 @@ def format_item_message(item):
     return msg
 
 def item_keyboard(item):
+    uid = short_id(item["url"])
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("⭐ Favori", callback_data=f"fav|{item['url']}|{item['title'][:40]}"),
+        InlineKeyboardButton("⭐ Favori", callback_data=f"fav|{uid}"),
         InlineKeyboardButton("🔗 Ouvrir", url=item["url"]),
     ]])
 
@@ -110,96 +123,97 @@ def item_keyboard(item):
 async def send_item_alert(app, item):
     text = format_item_message(item)
     kb   = item_keyboard(item)
-    try:
-        if item.get("image_url"):
-            await app.bot.send_photo(chat_id=CHAT_ID, photo=item["image_url"],
-                caption=text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-        else:
-            await app.bot.send_message(chat_id=CHAT_ID, text=text,
-                parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-        db.mark_seen(item["url"], item["title"])
-    except Exception as e:
-        log.error(f"Erreur envoi: {e}")
+    sent = False
+
+    # Tente d'envoyer avec photo
+    image_url = item.get("image_url", "")
+    if image_url and image_url.startswith("http"):
         try:
-            await app.bot.send_message(chat_id=CHAT_ID, text=text,
-                parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-            db.mark_seen(item["url"], item["title"])
-        except Exception as e2:
-            log.error(f"Fallback échoué: {e2}")
+            await app.bot.send_photo(
+                chat_id=CHAT_ID,
+                photo=image_url,
+                caption=text[:1024],
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb,
+            )
+            sent = True
+        except Exception as e:
+            log.warning(f"Photo échouée ({item['platform']}): {e}")
+
+    # Fallback texte seul
+    if not sent:
+        try:
+            await app.bot.send_message(
+                chat_id=CHAT_ID,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb,
+                disable_web_page_preview=False,
+            )
+            sent = True
+        except Exception as e:
+            log.error(f"Envoi texte échoué: {e}")
+
+    if sent:
+        db.mark_seen(item["url"], item["title"])
 
 
-# ── Scan en arrière-plan ──────────────────────────────────
+# ── Scan ──────────────────────────────────────────────────
 
-async def _do_scan(app, brands=None, silent=False):
-    global last_scan_results, scan_running
-    if scan_running:
-        return
-    scan_running = True
+async def run_scan(app, brands=None, silent=False):
+    global last_scan_results
     target = brands or ALL_BRANDS
     stats["scans"] += 1
     stats["last_scan"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-
     if not silent:
         await app.bot.send_message(CHAT_ID,
             f"🔍 Scan en cours sur {len(target)} marques...\nPlateformes : eBay · Vestiaire")
-
     pepites, autres = [], []
     for brand in target:
         try:
-            # Scraping dans un thread séparé pour ne pas bloquer
             loop = asyncio.get_event_loop()
-            raw = await loop.run_in_executor(None, scrape_all, brand, 2000)
-            filtered = filter_and_enrich(raw)
+            raw  = await loop.run_in_executor(None, scrape_all, brand, 2000)
+            filtered = [_enrich(it) for it in raw
+                       if not _has_forbidden_material(it) and not db.is_seen(it["url"])]
             for it in filtered:
                 (pepites if it["pepite"] else autres).append(it)
         except Exception as e:
             log.error(f"Erreur scan {brand}: {e}")
-            continue
-
     pepites.sort(key=lambda x: x["margin_pct"], reverse=True)
     autres.sort(key=lambda x: x["margin_pct"], reverse=True)
     ordered = pepites + autres
     last_scan_results = ordered
     stats["articles_found"] += len(ordered)
     stats["pepites_found"]  += len(pepites)
-    scan_running = False
-
     if not ordered:
         if not silent:
             await app.bot.send_message(CHAT_ID, "✅ Scan terminé — aucun nouvel article.")
         return
-
     await app.bot.send_message(CHAT_ID,
         f"✅ *Scan terminé*\n\n📦 Articles : *{len(ordered)}*\n🔥 Pépites : *{len(pepites)}*",
         parse_mode=ParseMode.MARKDOWN)
-
     for it in pepites[:10]:
-        await send_item_alert(app, it)
-        await asyncio.sleep(0.5)
+        await send_item_alert(app, it); await asyncio.sleep(0.8)
     for it in autres[:20]:
-        await send_item_alert(app, it)
-        await asyncio.sleep(0.5)
+        await send_item_alert(app, it); await asyncio.sleep(0.8)
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    asyncio.create_task(_do_scan(context.application, silent=True))
+    await run_scan(context.application, silent=True)
 
 
 # ── Commandes ─────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"👔 *Bot Sourcing Luxe*\n\nTon chat ID : `{update.effective_chat.id}`\n\n"
+        f"👔 *Bot Sourcing Luxe*\n\nChat ID : `{update.effective_chat.id}`\n\n"
         f"/scan — Scan immédiat\n/pepites — Pépites du dernier scan\n"
         f"/marque Brioni — Cherche une marque\n/favoris — Tes favoris\n"
         f"/stats — Statistiques\n/reset — Vide le cache",
         parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if scan_running:
-        await update.message.reply_text("⏳ Un scan est déjà en cours...")
-        return
-    await update.message.reply_text("🚀 Scan lancé en arrière-plan — tu resteras réactif !")
-    asyncio.create_task(_do_scan(ctx.application))
+    await update.message.reply_text("🚀 Scan lancé...")
+    asyncio.create_task(run_scan(ctx.application))
 
 async def cmd_pepites(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     peps = [it for it in last_scan_results if it.get("pepite")]
@@ -208,52 +222,45 @@ async def cmd_pepites(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(f"🔥 *{len(peps)} pépite(s) :*", parse_mode=ParseMode.MARKDOWN)
     for it in peps[:10]:
-        await send_item_alert(ctx.application, it)
-        await asyncio.sleep(0.4)
+        await send_item_alert(ctx.application, it); await asyncio.sleep(0.8)
 
 async def cmd_marque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
-        await update.message.reply_text("Usage : /marque Brioni")
-        return
+        await update.message.reply_text("Usage : /marque Brioni"); return
     brand = " ".join(ctx.args)
     await update.message.reply_text(f"🔍 Recherche *{brand}*...", parse_mode=ParseMode.MARKDOWN)
     loop = asyncio.get_event_loop()
-    raw = await loop.run_in_executor(None, scrape_all, brand, 2000)
-    filtered = [_enrich(it) for it in raw if not _has_forbidden_material(it) and not db.is_seen(it["url"])]
+    raw  = await loop.run_in_executor(None, scrape_all, brand, 2000)
+    filtered = [_enrich(it) for it in raw
+                if not _has_forbidden_material(it) and not db.is_seen(it["url"])]
     filtered.sort(key=lambda x: x["margin_pct"], reverse=True)
     if not filtered:
-        await update.message.reply_text(f"Aucun article pour *{brand}*.", parse_mode=ParseMode.MARKDOWN)
-        return
+        await update.message.reply_text(f"Aucun article pour *{brand}*.", parse_mode=ParseMode.MARKDOWN); return
     await update.message.reply_text(f"✅ *{len(filtered)} article(s) :*", parse_mode=ParseMode.MARKDOWN)
     for it in filtered[:8]:
-        await send_item_alert(ctx.application, it)
-        await asyncio.sleep(0.4)
+        await send_item_alert(ctx.application, it); await asyncio.sleep(0.8)
 
 async def cmd_favoris(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     favs = db.list_favorites()
     if not favs:
-        await update.message.reply_text("Pas encore de favoris — clique ⭐ sous un article.")
-        return
+        await update.message.reply_text("Pas encore de favoris."); return
     await update.message.reply_text(f"⭐ *{len(favs)} favori(s) :*", parse_mode=ParseMode.MARKDOWN)
     for it in favs:
-        text = (f"*{it['title']}*\n💰 {it['price']:.0f}€ → ~{it.get('sell_estimated','?')}€  "
+        uid = short_id(it["url"])
+        text = (f"*{it['title'][:80]}*\n💰 {it['price']:.0f}€ → ~{it.get('sell_estimated','?')}€  "
                 f"📊 +{it.get('margin_pct','?')}%\n🔗 [Voir]({it['url']})")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🗑 Retirer", callback_data=f"unfav|{it['url']}"),
+            InlineKeyboardButton("🗑 Retirer", callback_data=f"unfav|{uid}"),
             InlineKeyboardButton("🔗 Ouvrir", url=it["url"]),
         ]])
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"📊 *Statistiques*\n\n🔍 Scans : {stats['scans']}\n"
-        f"📦 Articles : {stats['articles_found']}\n"
-        f"🔥 Pépites : {stats['pepites_found']}\n"
-        f"⭐ Favoris : {len(db.list_favorites())}\n"
-        f"🕐 Dernier scan : {stats['last_scan'] or 'jamais'}\n"
-        f"⏱ Auto toutes les {SCAN_INTERVAL_MIN} min\n"
-        f"{'⏳ Scan en cours...' if scan_running else '✅ Bot disponible'}",
+        f"📊 *Statistiques*\n\n🔍 Scans : {stats['scans']}\n📦 Articles : {stats['articles_found']}\n"
+        f"🔥 Pépites : {stats['pepites_found']}\n⭐ Favoris : {len(db.list_favorites())}\n"
+        f"🕐 Dernier scan : {stats['last_scan'] or 'jamais'}\n⏱ Auto toutes les {SCAN_INTERVAL_MIN} min",
         parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -265,15 +272,17 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data  = query.data
     if data.startswith("fav|"):
-        _, url, title = data.split("|", 2)
-        item = next((it for it in last_scan_results if it["url"] == url), {"url": url, "title": title, "price": 0})
+        _, uid = data.split("|", 1)
+        url  = get_url(uid)
+        item = next((it for it in last_scan_results if it["url"] == url), {"url": url, "title": url[:40], "price": 0})
         if db.add_favorite(item):
             await query.edit_message_reply_markup(InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Ajouté", callback_data="noop"),
                 InlineKeyboardButton("🔗 Ouvrir", url=url),
             ]]))
     elif data.startswith("unfav|"):
-        _, url = data.split("|", 1)
+        _, uid = data.split("|", 1)
+        url = get_url(uid)
         db.remove_favorite(url)
         await query.edit_message_reply_markup(InlineKeyboardMarkup([[
             InlineKeyboardButton("🗑 Retiré", callback_data="noop"),
@@ -285,7 +294,6 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
     log.info("Serveur HTTP démarré sur le port 10000")
-
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("scan",    cmd_scan))
@@ -295,12 +303,10 @@ def main():
     app.add_handler(CommandHandler("stats",   cmd_stats))
     app.add_handler(CommandHandler("reset",   cmd_reset))
     app.add_handler(CallbackQueryHandler(callback_handler))
-
-    # Scan auto — tourne en arrière-plan sans bloquer
-    app.job_queue.run_repeating(auto_scan_job, interval=SCAN_INTERVAL_MIN * 60, first=120)
-
+    app.job_queue.run_repeating(auto_scan_job, interval=SCAN_INTERVAL_MIN * 60, first=60)
     log.info(f"Bot démarré — scan toutes les {SCAN_INTERVAL_MIN} min")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
+
