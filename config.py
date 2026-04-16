@@ -12,20 +12,15 @@ MAX_PRICE = 400
 SCAN_INTERVAL_MINUTES = 60  # était 30, passe à 60
 # ── Marques par tier de revente
 TIER1_BRANDS = [
-    "Hermès", "Chanel", "Louis Vuitton", "Dior", "Brioni",
-    "Kiton", "Loro Piana", "Berluti",
+    "Hermès", "Chanel", "Louis Vuitton", "Dior", "Brioni", "Brunello Cucinelli", "Kiton", "Loro Piana", "Berluti", "Ralph Lauren purple label", "Tom Ford"
 ]
 
 TIER2_BRANDS = [
-    "Zegna", "Canali", "Isaia", "Corneliani", "Boglioli",
-    "Tom Ford", "Gucci", "Prada", "Balenciaga", "Bottega Veneta",
+    "Zegna", "Canali", "Isaia", "Corneliani", "Gucci", "Prada", "Balenciaga", "Bottega Veneta",
 ]
 
 TIER3_BRANDS = [
-    "Burberry", "Hugo Boss", "Ralph Lauren", "Lanvin", "Givenchy",
-    "Valentino", "Versace", "Dolce & Gabbana", "Moncler", "Stone Island",
-    "Brunello Cucinelli", "Paul Smith", "Sandro", "A.P.C.", "Ami Paris",
-    "Celine", "Loewe", "Fendi", "Balmain", "Acne Studios",
+    "Burberry", "Lanvin", "Givenchy", "Valentino", "Versace", "Dolce & Gabbana", "Moncler", "Stone Island", "Celine", "Loewe", "Fendi",
 ]
 
 # ── Liste complète (utilisée par les scrapers)
