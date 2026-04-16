@@ -200,6 +200,89 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
 
 
 
+
+# ─────────────────────────────────────────────────────────────────
+#  VINTED — API mobile non documentée
+# ─────────────────────────────────────────────────────────────────
+
+_vinted_session = None
+
+def _init_vinted_session():
+    global _vinted_session
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "com.vinted.android/23.36.0 (Android 12; Samsung Galaxy S21)",
+        "Accept": "application/json",
+        "Accept-Language": "fr-FR,fr;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    })
+    try:
+        # Init session pour obtenir les cookies
+        r = session.get("https://www.vinted.fr", timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+                "Accept": "text/html,application/xhtml+xml,*/*",
+                "Accept-Language": "fr-FR,fr;q=0.9",
+            })
+        session.headers.update({
+            "X-CSRF-Token": session.cookies.get("CSRF-TOKEN", ""),
+            "Referer": "https://www.vinted.fr/",
+        })
+    except Exception as e:
+        log.warning(f"Vinted init: {e}")
+    _vinted_session = session
+    return session
+
+def scrape_vinted(brand: str, max_price: int = 2000) -> list[dict]:
+    global _vinted_session
+    if not _vinted_session:
+        _init_vinted_session()
+    results = []
+    try:
+        url = "https://www.vinted.fr/api/v2/catalog/items"
+        params = {
+            "search_text": brand,
+            "per_page":    24,
+            "page":        1,
+            "order":       "newest_first",
+            "price_to":    max_price,
+        }
+        resp = _vinted_session.get(url, params=params, timeout=15)
+
+        if resp.status_code == 401 or resp.status_code == 403:
+            log.warning(f"Vinted {resp.status_code} — réinitialisation session")
+            _init_vinted_session()
+            resp = _vinted_session.get(url, params=params, timeout=15)
+
+        if resp.status_code == 200:
+            for item in resp.json().get("items", []):
+                price_raw = item.get("price", {})
+                price = float(price_raw.get("amount", 0)) if isinstance(price_raw, dict) else 0.0
+                if not price or price > max_price:
+                    continue
+                photos    = item.get("photos", [])
+                image_url = photos[0].get("url", "") if photos else ""
+                results.append({
+                    "title":       item.get("title", ""),
+                    "price":       price,
+                    "url":         f"https://www.vinted.fr/items/{item['id']}",
+                    "image_url":   image_url,
+                    "brand":       item.get("brand_title", brand),
+                    "size":        item.get("size_title", ""),
+                    "description": item.get("description", ""),
+                    "platform":    "Vinted",
+                })
+        else:
+            log.warning(f"Vinted {brand}: HTTP {resp.status_code}")
+
+        log.info(f"Vinted '{brand}': {len(results)} articles")
+
+    except Exception as e:
+        log.error(f"Vinted error ({brand}): {e}")
+    _sleep()
+    return results
+
 # ─────────────────────────────────────────────────────────────────
 #  LEBONCOIN — API JSON interne
 # ─────────────────────────────────────────────────────────────────
@@ -292,6 +375,7 @@ def scrape_leboncoin(brand: str, max_price: int = 2000) -> list[dict]:
 def scrape_all(brand: str, max_price: int = 2000) -> list[dict]:
     results = []
     results += scrape_ebay(brand, max_price)
+    results += scrape_vinted(brand, max_price)
     results += scrape_leboncoin(brand, max_price)
     results += scrape_vestiaire(brand, max_price)
     return results
