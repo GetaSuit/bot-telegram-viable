@@ -20,6 +20,7 @@ import config
 import database as db
 from scrapers import scrape_all
 from config import (
+    ALLOWED_KEYWORDS, FORBIDDEN_KEYWORDS, MIN_BUY_PRICE, MAX_BUY_PRICE,
     TELEGRAM_TOKEN, CHAT_ID, SCAN_INTERVAL_MIN,
     ALL_BRANDS, FORBIDDEN_MATERIALS,
     get_tier, estimated_sell_price, margin_pct, is_pepite,
@@ -70,6 +71,17 @@ def _has_forbidden_material(item):
     text = (item.get("title", "") + " " + item.get("description", "")).lower()
     return any(m in text for m in FORBIDDEN_MATERIALS)
 
+def _is_allowed_category(item):
+    text = (item.get("title", "") + " " + item.get("description", "")).lower()
+    # Rejette si mot interdit trouvé
+    if any(k in text for k in FORBIDDEN_KEYWORDS):
+        return False
+    # Accepte si mot autorisé trouvé (ou si aucun filtre ne s'applique)
+    return any(k in text for k in ALLOWED_KEYWORDS)
+
+def _price_ok(item):
+    return MIN_BUY_PRICE <= item.get("price", 0) <= MAX_BUY_PRICE
+
 def _size_ok(item):
     size = item.get("size", "").strip()
     if not size:
@@ -89,6 +101,8 @@ def filter_and_enrich(items):
     out = []
     for it in items:
         if _has_forbidden_material(it): continue
+        if not _is_allowed_category(it): continue
+        if not _price_ok(it): continue
         if not _size_ok(it): continue
         if db.is_seen(it["url"]): continue
         out.append(_enrich(it))
@@ -172,9 +186,12 @@ async def run_scan(app, brands=None, silent=False):
     for brand in target:
         try:
             loop = asyncio.get_event_loop()
-            raw  = await loop.run_in_executor(None, scrape_all, brand, 2000)
+            raw  = await loop.run_in_executor(None, scrape_all, brand, MAX_BUY_PRICE)
             filtered = [_enrich(it) for it in raw
-                       if not _has_forbidden_material(it) and not db.is_seen(it["url"])]
+                       if not _has_forbidden_material(it)
+                       and _is_allowed_category(it)
+                       and _price_ok(it)
+                       and not db.is_seen(it["url"])]
             for it in filtered:
                 (pepites if it["pepite"] else autres).append(it)
         except Exception as e:
@@ -230,9 +247,12 @@ async def cmd_marque(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     brand = " ".join(ctx.args)
     await update.message.reply_text(f"🔍 Recherche *{brand}*...", parse_mode=ParseMode.MARKDOWN)
     loop = asyncio.get_event_loop()
-    raw  = await loop.run_in_executor(None, scrape_all, brand, 2000)
+    raw  = await loop.run_in_executor(None, scrape_all, brand, MAX_BUY_PRICE)
     filtered = [_enrich(it) for it in raw
-                if not _has_forbidden_material(it) and not db.is_seen(it["url"])]
+                if not _has_forbidden_material(it)
+                and _is_allowed_category(it)
+                and _price_ok(it)
+                and not db.is_seen(it["url"])]
     filtered.sort(key=lambda x: x["margin_pct"], reverse=True)
     if not filtered:
         await update.message.reply_text(f"Aucun article pour *{brand}*.", parse_mode=ParseMode.MARKDOWN); return
@@ -309,4 +329,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
