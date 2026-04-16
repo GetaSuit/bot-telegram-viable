@@ -202,7 +202,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ Marques surveillées : {len(BRANDS)}\n"
-        f"📡 Sources : eBay · Vinted · Leboncoin"
+        f"📡 Sources : eBay · Vinted"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -226,7 +226,7 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Test des sources en cours...")
     brand = "Hermès"
     lines = [f"📊 *Diagnostic* — `{brand}` ({MIN_PRICE}€–{MAX_PRICE}€)\n"]
-    for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted), ("Leboncoin", search_leboncoin)]:
+   for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
         try:
             res = fn(brand)
             if res:
