@@ -1,9 +1,10 @@
 """
-scrapers.py — eBay Browse API (nouvelle API REST) + Vestiaire
+scrapers.py — eBay Browse API avec App ID + Cert ID
 """
 
 import re
 import json
+import os
 import time
 import random
 import logging
@@ -13,7 +14,8 @@ from config import SIZES_MEN, SIZES_WOMEN
 
 log = logging.getLogger(__name__)
 
-EBAY_APP_ID = "FlorianB-SOURCELU-PRD-c6c21b7a2-f7ba2d0e"
+EBAY_APP_ID  = os.environ.get("EBAY_APP_ID",  "")
+EBAY_CERT_ID = os.environ.get("EBAY_CERT_ID", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -31,11 +33,17 @@ def _parse_price(text: str) -> float | None:
     except ValueError:
         return None
 
-def _get_ebay_token() -> str | None:
+_ebay_token = None
+_ebay_token_expiry = 0
+
+def get_ebay_token() -> str | None:
+    global _ebay_token, _ebay_token_expiry
+    if _ebay_token and time.time() < _ebay_token_expiry:
+        return _ebay_token
     try:
         import base64
         credentials = base64.b64encode(
-            f"{EBAY_APP_ID}:".encode()
+            f"{EBAY_APP_ID}:{EBAY_CERT_ID}".encode()
         ).decode()
         resp = requests.post(
             "https://api.ebay.com/identity/v1/oauth2/token",
@@ -47,26 +55,18 @@ def _get_ebay_token() -> str | None:
             timeout=15,
         )
         if resp.status_code == 200:
-            return resp.json().get("access_token")
+            _ebay_token = resp.json().get("access_token")
+            _ebay_token_expiry = time.time() + 6000
+            log.info("Token eBay obtenu ✅")
+            return _ebay_token
         log.error(f"eBay token error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         log.error(f"eBay token exception: {e}")
     return None
 
-_ebay_token = None
-_ebay_token_expiry = 0
-
-def get_ebay_token() -> str | None:
-    global _ebay_token, _ebay_token_expiry
-    if _ebay_token and time.time() < _ebay_token_expiry:
-        return _ebay_token
-    _ebay_token = _get_ebay_token()
-    _ebay_token_expiry = time.time() + 6000
-    return _ebay_token
-
 
 # ─────────────────────────────────────────────────────────────────
-#  EBAY — Browse API REST officielle
+#  EBAY — Browse API REST
 # ─────────────────────────────────────────────────────────────────
 
 def scrape_ebay(brand: str, max_price: int = 2000) -> list[dict]:
@@ -74,42 +74,36 @@ def scrape_ebay(brand: str, max_price: int = 2000) -> list[dict]:
     try:
         token = get_ebay_token()
         if not token:
-            log.error("Pas de token eBay")
             return []
 
         url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         params = {
-            "q":           brand,
+            "q":            brand,
             "category_ids": "11450",
-            "filter":      f"price:[..{max_price}],currency:EUR,conditionIds:{{1000|1500|2000|2500|3000}}",
-            "sort":        "newlyListed",
-            "limit":       "20",
-            "fieldgroups": "EXTENDED",
+            "filter":       f"price:[..{max_price}],currency:EUR",
+            "sort":         "newlyListed",
+            "limit":        "20",
         }
         headers = {
-            "Authorization":          f"Bearer {token}",
+            "Authorization":           f"Bearer {token}",
             "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
             "Content-Type":            "application/json",
         }
         resp = requests.get(url, params=params, headers=headers, timeout=15)
 
         if resp.status_code == 200:
-            data  = resp.json()
-            items = data.get("itemSummaries", [])
+            items = resp.json().get("itemSummaries", [])
             for item in items:
-                price_obj = item.get("price", {})
-                price     = float(price_obj.get("value", 0))
+                price = float(item.get("price", {}).get("value", 0))
                 if not price or price > max_price:
                     continue
-
+                title     = item.get("title", "")
                 image_url = item.get("image", {}).get("imageUrl", "")
                 size = ""
-                title = item.get("title", "")
                 for s in SIZES_MEN + SIZES_WOMEN:
                     if s.upper() in title.upper():
                         size = s
                         break
-
                 results.append({
                     "title":       title,
                     "price":       price,
@@ -121,7 +115,7 @@ def scrape_ebay(brand: str, max_price: int = 2000) -> list[dict]:
                     "platform":    "eBay",
                 })
         else:
-            log.error(f"eBay Browse API {brand}: {resp.status_code} {resp.text[:300]}")
+            log.error(f"eBay {brand}: {resp.status_code} {resp.text[:200]}")
 
         log.info(f"eBay '{brand}': {len(results)} articles")
 
