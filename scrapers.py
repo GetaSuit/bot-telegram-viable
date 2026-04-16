@@ -1,5 +1,5 @@
 """
-scrapers.py — eBay API officielle + Vestiaire Collective
+scrapers.py — eBay Browse API (nouvelle API REST) + Vestiaire
 """
 
 import re
@@ -31,91 +31,102 @@ def _parse_price(text: str) -> float | None:
     except ValueError:
         return None
 
+def _get_ebay_token() -> str | None:
+    try:
+        import base64
+        credentials = base64.b64encode(
+            f"{EBAY_APP_ID}:".encode()
+        ).decode()
+        resp = requests.post(
+            "https://api.ebay.com/identity/v1/oauth2/token",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data="grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("access_token")
+        log.error(f"eBay token error: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        log.error(f"eBay token exception: {e}")
+    return None
+
+_ebay_token = None
+_ebay_token_expiry = 0
+
+def get_ebay_token() -> str | None:
+    global _ebay_token, _ebay_token_expiry
+    if _ebay_token and time.time() < _ebay_token_expiry:
+        return _ebay_token
+    _ebay_token = _get_ebay_token()
+    _ebay_token_expiry = time.time() + 6000
+    return _ebay_token
+
 
 # ─────────────────────────────────────────────────────────────────
-#  EBAY — API Finding officielle (jamais bloquée)
+#  EBAY — Browse API REST officielle
 # ─────────────────────────────────────────────────────────────────
 
 def scrape_ebay(brand: str, max_price: int = 2000) -> list[dict]:
     results = []
     try:
-        url = "https://svcs.ebay.com/services/search/FindingService/v1"
+        token = get_ebay_token()
+        if not token:
+            log.error("Pas de token eBay")
+            return []
+
+        url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
         params = {
-            "OPERATION-NAME":          "findItemsAdvanced",
-            "SERVICE-VERSION":         "1.0.0",
-            "SECURITY-APPNAME":        EBAY_APP_ID,
-            "RESPONSE-DATA-FORMAT":    "JSON",
-            "REST-PAYLOAD":            "",
-            "keywords":                brand,
-            "categoryId":              "11450",  # Vêtements
-            "itemFilter(0).name":      "MaxPrice",
-            "itemFilter(0).value":     str(max_price),
-            "itemFilter(0).paramName": "Currency",
-            "itemFilter(0).paramValue":"EUR",
-            "itemFilter(1).name":      "ListingType",
-            "itemFilter(1).value":     "FixedPrice",
-            "itemFilter(2).name":      "Condition",
-            "itemFilter(2).value(0)":  "1000",
-            "itemFilter(2).value(1)":  "1500",
-            "itemFilter(2).value(2)":  "2000",
-            "itemFilter(2).value(3)":  "2500",
-            "sortOrder":               "StartTimeNewest",
-            "paginationInput.entriesPerPage": "20",
-            "outputSelector(0)":       "PictureURLLarge",
-            "outputSelector(1)":       "GalleryInfo",
-            "affiliate.networkId":     "9",
-            "affiliate.siteId":        "71",
-            "siteid":                  "71",
+            "q":           brand,
+            "category_ids": "11450",
+            "filter":      f"price:[..{max_price}],currency:EUR,conditionIds:{{1000|1500|2000|2500|3000}}",
+            "sort":        "newlyListed",
+            "limit":       "20",
+            "fieldgroups": "EXTENDED",
         }
+        headers = {
+            "Authorization":          f"Bearer {token}",
+            "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
+            "Content-Type":            "application/json",
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
 
-        resp = requests.get(url, params=params, timeout=15)
-        data = resp.json()
+        if resp.status_code == 200:
+            data  = resp.json()
+            items = data.get("itemSummaries", [])
+            for item in items:
+                price_obj = item.get("price", {})
+                price     = float(price_obj.get("value", 0))
+                if not price or price > max_price:
+                    continue
 
-        search_result = (
-            data.get("findItemsAdvancedResponse", [{}])[0]
-               .get("searchResult", [{}])[0]
-        )
-        items = search_result.get("item", [])
+                image_url = item.get("image", {}).get("imageUrl", "")
+                size = ""
+                title = item.get("title", "")
+                for s in SIZES_MEN + SIZES_WOMEN:
+                    if s.upper() in title.upper():
+                        size = s
+                        break
 
-        for item in items:
-            title     = item.get("title", [""])[0]
-            item_url  = item.get("viewItemURL", [""])[0]
-            price_raw = item.get("sellingStatus", [{}])[0].get("currentPrice", [{}])[0]
-            price     = float(price_raw.get("__value__", 0))
+                results.append({
+                    "title":       title,
+                    "price":       price,
+                    "url":         item.get("itemWebUrl", ""),
+                    "image_url":   image_url,
+                    "brand":       brand,
+                    "size":        size,
+                    "description": title,
+                    "platform":    "eBay",
+                })
+        else:
+            log.error(f"eBay Browse API {brand}: {resp.status_code} {resp.text[:300]}")
 
-            if not price or price > max_price:
-                continue
-
-            # Image
-            image_url = ""
-            pics = item.get("pictureURLLarge", [])
-            if not pics:
-                pics = item.get("galleryURL", [])
-            if pics:
-                image_url = pics[0]
-
-            # Taille depuis le titre
-            size = ""
-            for s in SIZES_MEN + SIZES_WOMEN:
-                if s.upper() in title.upper():
-                    size = s
-                    break
-
-            results.append({
-                "title":       title,
-                "price":       price,
-                "url":         item_url,
-                "image_url":   image_url,
-                "brand":       brand,
-                "size":        size,
-                "description": title,
-                "platform":    "eBay",
-            })
-
-        log.info(f"eBay '{brand}': {len(results)} articles trouvés")
+        log.info(f"eBay '{brand}': {len(results)} articles")
 
     except Exception as e:
-        log.error(f"eBay API error ({brand}): {e}")
+        log.error(f"eBay error ({brand}): {e}")
     _sleep()
     return results
 
@@ -131,7 +142,6 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # JSON embarqué
         for script in soup.find_all("script"):
             txt = script.string or ""
             if '"price"' in txt and '"link"' in txt:
@@ -163,7 +173,6 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
                 except Exception:
                     continue
 
-        # Fallback HTML
         if not results:
             for card in soup.select("article, [class*='productCard'], [class*='product-card']")[:20]:
                 link_el  = card.select_one("a[href]")
@@ -188,7 +197,7 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
                     "platform":    "Vestiaire Collective",
                 })
 
-        log.info(f"Vestiaire '{brand}': {len(results)} articles trouvés")
+        log.info(f"Vestiaire '{brand}': {len(results)} articles")
 
     except Exception as e:
         log.error(f"Vestiaire error ({brand}): {e}")
