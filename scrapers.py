@@ -199,6 +199,92 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
     return results
 
 
+
+# ─────────────────────────────────────────────────────────────────
+#  LEBONCOIN — API JSON interne
+# ─────────────────────────────────────────────────────────────────
+
+def scrape_leboncoin(brand: str, max_price: int = 2000) -> list[dict]:
+    results = []
+    try:
+        url = "https://api.leboncoin.fr/api/adfinder/v1/search"
+        payload = {
+            "filters": {
+                "category": {"id": "2"},
+                "keywords": {"text": brand, "type": "all"},
+                "price":    {"max": str(max_price)},
+                "shippable": True,
+            },
+            "sort_by":    "time",
+            "sort_order": "desc",
+            "limit":      20,
+            "offset":     0,
+        }
+        headers = {
+            **HEADERS,
+            "Content-Type": "application/json",
+            "api_key":      "ba0c2dad52b3585c9a20cd59d9e66f9e",
+            "Origin":       "https://www.leboncoin.fr",
+            "Referer":      "https://www.leboncoin.fr/",
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=15)
+
+        if resp.status_code == 200:
+            for ad in resp.json().get("ads", [])[:20]:
+                price = ad.get("price", [None])[0] if ad.get("price") else None
+                if not price or float(price) > max_price:
+                    continue
+                ad_id    = ad.get("list_id", "")
+                slug     = ad.get("slug", "")
+                full_url = f"https://www.leboncoin.fr/{slug}" if slug else f"https://www.leboncoin.fr/annonce/{ad_id}"
+                images   = ad.get("images", {})
+                img_list = images.get("urls_large", images.get("urls", [])) if isinstance(images, dict) else []
+                image_url = img_list[0] if img_list else ""
+                results.append({
+                    "title":       ad.get("subject", ""),
+                    "price":       float(price),
+                    "url":         full_url,
+                    "image_url":   image_url,
+                    "brand":       brand,
+                    "size":        "",
+                    "description": ad.get("body", ""),
+                    "platform":    "Leboncoin",
+                })
+        else:
+            # Fallback HTML
+            html_url = "https://www.leboncoin.fr/recherche"
+            params = {"text": brand, "category": "2", "price": f"0-{max_price}", "shippable": "1"}
+            r2   = requests.get(html_url, params=params, headers=HEADERS, timeout=15)
+            soup = BeautifulSoup(r2.text, "html.parser")
+            for card in soup.select("a[data-test-id='ad'], [data-qa-id='aditem_container']")[:20]:
+                title_el = card.select_one("[data-test-id='ad-title'], [data-qa-id='aditem_title']")
+                price_el = card.select_one("[data-test-id='price'], [data-qa-id='aditem_price']")
+                img_el   = card.select_one("img")
+                if not title_el or not price_el:
+                    continue
+                price = _parse_price(price_el.text)
+                if not price or price > max_price:
+                    continue
+                href = card.get("href", "")
+                full_url = href if href.startswith("http") else f"https://www.leboncoin.fr{href}"
+                results.append({
+                    "title":       title_el.text.strip(),
+                    "price":       price,
+                    "url":         full_url,
+                    "image_url":   img_el.get("src", "") if img_el else "",
+                    "brand":       brand,
+                    "size":        "",
+                    "description": title_el.text.strip(),
+                    "platform":    "Leboncoin",
+                })
+
+        log.info(f"Leboncoin '{brand}': {len(results)} articles")
+
+    except Exception as e:
+        log.error(f"Leboncoin error ({brand}): {e}")
+    _sleep()
+    return results
+
 # ─────────────────────────────────────────────────────────────────
 #  DISPATCHER
 # ─────────────────────────────────────────────────────────────────
@@ -206,5 +292,6 @@ def scrape_vestiaire(brand: str, max_price: int = 2000) -> list[dict]:
 def scrape_all(brand: str, max_price: int = 2000) -> list[dict]:
     results = []
     results += scrape_ebay(brand, max_price)
+    results += scrape_leboncoin(brand, max_price)
     results += scrape_vestiaire(brand, max_price)
     return results
