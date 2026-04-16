@@ -131,14 +131,15 @@ async def send_article(bot, item: dict, brand: str):
 # ──────────────────────────────────────────
 
 _scan_cursor = {"index": 0}
-BATCH_SIZE = 3  # marques scannées par cycle
+BATCH_SIZE = 2       # marques par cycle
+MAX_PER_BRAND = 1    # articles max par marque par cycle
 
 async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     start = _scan_cursor["index"]
     batch = BRANDS[start: start + BATCH_SIZE]
     _scan_cursor["index"] = (start + BATCH_SIZE) % len(BRANDS)
 
-    logger.info(f"🔄 Scan batch [{start}→{start + BATCH_SIZE}] : {batch}")
+    logger.info(f"🔄 Scan batch [{start}→{start+BATCH_SIZE}] : {batch}")
     total_sent = 0
 
     for brand in batch:
@@ -146,22 +147,20 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
             results = search_all_sources(brand)
             new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
 
-            for item in new_items[:2]:  # max 2 articles par marque par cycle
+            for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
                     mark_as_seen(url)
                 await send_article(context.bot, item, brand)
                 total_sent += 1
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
 
         except Exception as e:
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)  # pause entre marques
 
     logger.info(f"✅ Batch terminé — {total_sent} articles envoyés")
-    if total_sent == 0:
-        logger.info("Aucun nouvel article dans ce batch.")
 
 # ──────────────────────────────────────────
 # COMMANDES
