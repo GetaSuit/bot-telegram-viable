@@ -6,6 +6,7 @@ from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
     EBAY_APP_ID, EBAY_CERT_ID,
     TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
+    EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -16,10 +17,18 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────
 
 def is_relevant(title: str, brand: str) -> bool:
-    """Vérifie que le titre contient vraiment le nom de la marque."""
     if not title or not brand:
         return False
-    return brand.lower() in title.lower()
+    title_lower = title.lower()
+    if brand.lower() not in title_lower:
+        return False
+    for kw in EXCLUDED_KEYWORDS:
+        if kw.lower() in title_lower:
+            return False
+    for kw in ALLOWED_KEYWORDS:
+        if kw.lower() in title_lower:
+            return True
+    return True
 
 
 # ──────────────────────────────────────────
@@ -145,69 +154,6 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
 
 
 # ──────────────────────────────────────────
-# LEBONCOIN
-# ──────────────────────────────────────────
-
-LBC_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-FR,fr;q=0.9",
-    "Referer": "https://www.leboncoin.fr/",
-    "Content-Type": "application/json",
-    "sec-fetch-site": "same-origin",
-    "sec-fetch-mode": "cors",
-}
-
-def search_leboncoin(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
-    results = []
-    try:
-        payload = {
-            "filters": {
-                "category": {"id": "64"},
-                "keywords": {"text": brand, "type": "all"},
-                "price": {"min": str(min_price), "max": str(max_price)},
-                "location": {},
-            },
-            "limit": 20,
-            "offset": 0,
-            "sort_by": "time",
-            "sort_order": "desc",
-        }
-        r = requests.post(
-            "https://api.leboncoin.fr/finder/search",
-            json=payload,
-            headers=LBC_HEADERS,
-            timeout=15,
-        )
-        logger.info(f"[LBC] Status HTTP: {r.status_code}")
-        r.raise_for_status()
-        data = r.json()
-        for ad in data.get("ads", []):
-            title = ad.get("subject", "")
-            if not is_relevant(title, brand):
-                continue
-            images = ad.get("images", {})
-            thumb = images.get("thumb_url") or (images.get("urls", [None])[0])
-            price_list = ad.get("price", [])
-            price = str(price_list[0]) if price_list else "?"
-            results.append({
-                "title": title,
-                "price": price,
-                "url": ad.get("url"),
-                "image": thumb,
-                "source": "Leboncoin",
-            })
-        logger.info(f"[LBC] {len(results)} résultats pertinents pour '{brand}'")
-    except Exception as e:
-        logger.error(f"[LBC] Erreur '{brand}': {e}")
-    return results
-
-
-# ──────────────────────────────────────────
 # UNIFIÉ
 # ──────────────────────────────────────────
 
@@ -215,5 +161,4 @@ def search_all_sources(brand: str):
     all_results = []
     all_results.extend(search_ebay(brand))
     all_results.extend(search_vinted(brand))
-    all_results.extend(search_leboncoin(brand))
     return all_results
