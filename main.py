@@ -54,7 +54,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
-        pass  # silence les logs HTTP
+        pass
 
 def start_health_server():
     server = HTTPServer(("0.0.0.0", 10000), HealthHandler)
@@ -195,7 +195,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n\n"
         "Commandes :\n"
-        "/scan — Scan immédiat\n"
+        "/scan — Scan automatique\n"
+        "/chercher — Rechercher une marque\n"
         "/test\\_sources — Tester les sources\n"
         "/marques — Marques par tier\n"
         "/status — État du bot\n"
@@ -208,6 +209,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Aide — Bot Sourcing Luxe*\n\n"
         "/start — Démarrer\n"
         "/scan — Scan manuel\n"
+        "/chercher <marque> — Ex: `/chercher Hermès`\n"
         "/test\\_sources — Diagnostic sources\n"
         "/marques — Liste des marques\n"
         "/status — État\n"
@@ -243,6 +245,48 @@ async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Scan lancé en arrière-plan...")
     context.application.job_queue.run_once(scan_job, when=0, name="scan_manuel")
+
+async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Précise une marque.\nEx: `/chercher Hermès`",
+            parse_mode="Markdown"
+        )
+        return
+
+    brand = " ".join(context.args)
+    brand_match = next(
+        (b for b in BRANDS if b.lower() == brand.lower()), None
+    )
+
+    if not brand_match:
+        await update.message.reply_text(
+            f"❌ Marque `{brand}` non reconnue.\nTape /marques pour voir la liste.",
+            parse_mode="Markdown"
+        )
+        return
+
+    await update.message.reply_text(
+        f"🔍 Recherche en cours pour *{brand_match}*...",
+        parse_mode="Markdown"
+    )
+
+    results = search_all_sources(brand_match)
+    new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
+
+    if not new_items:
+        await update.message.reply_text(
+            f"⚠️ Aucun nouvel article trouvé pour *{brand_match}*.",
+            parse_mode="Markdown"
+        )
+        return
+
+    for item in new_items[:5]:
+        url = item.get("url", "")
+        if url:
+            mark_as_seen(url)
+        await send_article(context.bot, item, brand_match)
+        await asyncio.sleep(1.5)
 
 async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Test des sources en cours...")
@@ -291,7 +335,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ──────────────────────────────────────────
 
 def main():
-    # Serveur HTTP keep-alive dans un thread séparé
     thread = threading.Thread(target=start_health_server, daemon=True)
     thread.start()
 
@@ -305,6 +348,7 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("marques", cmd_marques))
     app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("chercher", cmd_chercher))
     app.add_handler(CommandHandler("test_sources", cmd_test_sources))
     app.add_handler(CallbackQueryHandler(button_callback))
 
