@@ -6,6 +6,7 @@ python-telegram-bot 20.6 | Render.com
 import logging
 import asyncio
 import threading
+import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -114,10 +115,10 @@ def format_article(item: dict, brand: str) -> str:
     resale_info = estimate_resale(price, brand)
 
     header = ""
-    if is_alert:
-        header = "🚨 *ALERTE PRIX* — Opportunité rare !\n"
     if runway:
         header = "⚠️ *ATTENTION* — Article défilé suspect\n"
+    elif is_alert:
+        header = "🚨 *ALERTE PRIX* — Opportunité rare !\n"
 
     return (
         f"{header}"
@@ -142,13 +143,13 @@ def build_keyboard(item: dict) -> InlineKeyboardMarkup:
 # ENVOI ARTICLE
 # ──────────────────────────────────────────
 
-async def send_article(bot, item: dict, brand: str, force_alert: bool = False):
+async def send_article(bot, item: dict, brand: str):
     text = format_article(item, brand)
     keyboard = build_keyboard(item)
     image = item.get("image")
 
-    # Alerte instantanée — envoie en premier avec mention spéciale
-    if force_alert or item.get("is_alert"):
+    # Alerte instantanée prix bas
+    if item.get("is_alert"):
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
@@ -163,7 +164,7 @@ async def send_article(bot, item: dict, brand: str, force_alert: bool = False):
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"⚠️ *Article défilé détecté* — Vérifier avant achat !",
+                text="⚠️ *Article défilé détecté* — Vérifier avant achat !",
                 parse_mode="Markdown",
             )
         except Exception:
@@ -218,7 +219,6 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             results = search_all_sources(brand)
             new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
-
             for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
@@ -226,7 +226,6 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
                 await send_article(context.bot, item, brand)
                 total_sent += 1
                 await asyncio.sleep(3)
-
         except Exception as e:
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
         await asyncio.sleep(5)
@@ -414,7 +413,7 @@ def main():
     app.job_queue.run_repeating(
         scan_job,
         interval=SCAN_INTERVAL_MINUTES * 60,
-        first=30,
+        first=60,
         name="scan_auto",
     )
 
@@ -423,11 +422,19 @@ def main():
         f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min | "
         f"alerte sous {ALERT_PRICE_THRESHOLD}€"
     )
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        close_loop=False,
-    )
+
+    while True:
+        try:
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Conflit détecté, redémarrage dans 15s : {e}")
+            time.sleep(15)
+            continue
+        break
 
 
 if __name__ == "__main__":
