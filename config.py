@@ -11,8 +11,28 @@ MIN_PRICE = 70
 MAX_PRICE = 400
 SCAN_INTERVAL_MINUTES = 60
 
-# ── Alerte instantanée : articles sous ce prix = notification urgente
-ALERT_PRICE_THRESHOLD = 150
+# ── Mots-clés déclencheurs d'alerte "coup du jour"
+HYPE_KEYWORDS = [
+    # Célébrités / Stars
+    "celebrity", "célébrité", "star", "vu sur", "porté par",
+    "worn by", "as seen on", "spotted", "paparazzi",
+    "kanye", "jay-z", "rihanna", "beyonce", "drake",
+    "harry styles", "david beckham", "zendaya", "kendall",
+    # Magazines / Presse
+    "vogue", "gq", "esquire", "hypebeast", "highsnobiety",
+    "mr porter", "editorial", "featured", "magazine",
+    "lookbook", "campaign", "publicité", "press",
+    # Défilés / Mode
+    "défilé", "runway", "fashion week", "fashion show",
+    "collection", "fw", "ss", "aw", "pre-fall",
+    "capsule", "collab", "collaboration", "limited",
+    "édition limitée", "limited edition", "exclusive",
+    # Tendance / Hype
+    "tendance", "trend", "hype", "it-bag", "it bag",
+    "must have", "must-have", "iconic", "iconique",
+    "grail", "graal", "rare", "introuvable", "sought",
+    "archive", "vintage", "deadstock",
+]
 
 # ── Mots-clés interdits
 EXCLUDED_KEYWORDS = [
@@ -39,18 +59,6 @@ EXCLUDED_KEYWORDS = [
     "talkie", "imprimante", "phone", "iphone", "samsung",
     "ordinateur", "laptop", "tablette", "console",
     "voiture", "moto", "vélo",
-    # Défilés / Pièces de collection (détecteur)
-    "défilé", "runway", "collection", "showcase", "editorial",
-    "lookbook", "campaign", "advertising", "publicité",
-    "press", "presse", "archive", "sample", "prototype",
-    "display", "exhibition", "musée", "museum",
-]
-
-# ── Mots défilé : déclenchent une alerte spéciale si prix suspect
-RUNWAY_KEYWORDS = [
-    "défilé", "runway", "collection", "archive", "sample",
-    "prototype", "editorial", "showcase", "exhibition",
-    "press", "presse", "lookbook",
 ]
 
 # ── Catégories ciblées
