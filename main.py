@@ -29,7 +29,6 @@ from config import (
     TIER2_BRANDS,
     TIER3_BRANDS,
     SCAN_INTERVAL_MINUTES,
-    ALERT_PRICE_THRESHOLD,
 )
 from scrapers import search_ebay, search_vinted, search_all_sources
 from database import init_db, is_already_seen, mark_as_seen
