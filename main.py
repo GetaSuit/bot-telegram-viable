@@ -28,6 +28,7 @@ from config import (
     TIER2_BRANDS,
     TIER3_BRANDS,
     SCAN_INTERVAL_MINUTES,
+    ALERT_PRICE_THRESHOLD,
 )
 from scrapers import search_ebay, search_vinted, search_all_sources
 from database import init_db, is_already_seen, mark_as_seen
@@ -77,7 +78,6 @@ def get_tier(brand: str) -> str:
 
 def estimate_resale(price_raw, brand: str) -> str:
     try:
-        # Accepte float, int ou string
         price = float(str(price_raw).replace(",", ".").replace("€", "").strip())
         if price <= 0:
             return "💰 Prix non disponible"
@@ -94,13 +94,34 @@ def estimate_resale(price_raw, brand: str) -> str:
         logger.warning(f"[estimate_resale] Erreur: {e} — raw: {price_raw}")
         return "💰 Prix non disponible"
 
+def score_emoji(score: int) -> str:
+    if score >= 80:
+        return "🔥"
+    if score >= 60:
+        return "⭐"
+    if score >= 40:
+        return "👍"
+    return "💤"
+
 def format_article(item: dict, brand: str) -> str:
     title = item.get("title", "Sans titre")
     price = item.get("price", "?")
     source = item.get("source", "?")
     url = item.get("url", "")
-    resale_info = estimate_resale(str(price), brand)
+    score = item.get("score", 0)
+    is_alert = item.get("is_alert", False)
+    runway = item.get("runway_suspect", False)
+    resale_info = estimate_resale(price, brand)
+
+    header = ""
+    if is_alert:
+        header = "🚨 *ALERTE PRIX* — Opportunité rare !\n"
+    if runway:
+        header = "⚠️ *ATTENTION* — Article défilé suspect\n"
+
     return (
+        f"{header}"
+        f"{score_emoji(score)} Score : {score}/100\n"
         f"🏷️ *{title}*\n"
         f"🔍 Source : {source}\n"
         f"{resale_info}\n"
@@ -121,10 +142,33 @@ def build_keyboard(item: dict) -> InlineKeyboardMarkup:
 # ENVOI ARTICLE
 # ──────────────────────────────────────────
 
-async def send_article(bot, item: dict, brand: str):
+async def send_article(bot, item: dict, brand: str, force_alert: bool = False):
     text = format_article(item, brand)
     keyboard = build_keyboard(item)
     image = item.get("image")
+
+    # Alerte instantanée — envoie en premier avec mention spéciale
+    if force_alert or item.get("is_alert"):
+        try:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"🚨🚨 *ALERTE PRIX* — {brand} à {item.get('price')}€ ! 🚨🚨",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+    # Alerte défilé suspect
+    if item.get("runway_suspect"):
+        try:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"⚠️ *Article défilé détecté* — Vérifier avant achat !",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
     try:
         if image:
             await bot.send_photo(
@@ -174,6 +218,7 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             results = search_all_sources(brand)
             new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
+
             for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
@@ -181,6 +226,7 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
                 await send_article(context.bot, item, brand)
                 total_sent += 1
                 await asyncio.sleep(3)
+
         except Exception as e:
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
         await asyncio.sleep(5)
@@ -197,6 +243,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Bot Sourcing Luxe actif*\n\n"
         "📦 Sources : eBay · Vinted\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"🚨 Alerte instantanée sous : {ALERT_PRICE_THRESHOLD}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n\n"
         "Commandes :\n"
         "/scan — Scan automatique\n"
@@ -217,7 +264,12 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/test\\_sources — Diagnostic sources\n"
         "/marques — Liste des marques\n"
         "/status — État\n"
-        "/help — Ce message"
+        "/help — Ce message\n\n"
+        "📊 *Score de pertinence :*\n"
+        "🔥 80–100 — Opportunité excellente\n"
+        "⭐ 60–79 — Bon article\n"
+        "👍 40–59 — Correct\n"
+        "💤 0–39 — Faible intérêt"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -229,6 +281,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔁 Scan auto toutes les : {SCAN_INTERVAL_MINUTES} min\n"
         f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"🚨 Alerte sous : {ALERT_PRICE_THRESHOLD}€\n"
         f"🏷️ Marques surveillées : {len(BRANDS)}\n"
         f"📡 Sources : eBay · Vinted"
     )
@@ -303,7 +356,9 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sample = res[0]
                 lines.append(
                     f"✅ *{name}* : {len(res)} résultats\n"
-                    f"   Ex: {str(sample.get('title',''))[:40]}… — {sample.get('price')}€"
+                    f"   Ex: {str(sample.get('title',''))[:40]}… "
+                    f"— {sample.get('price')}€ "
+                    f"(score: {sample.get('score', 0)})"
                 )
             else:
                 lines.append(f"⚠️ *{name}* : 0 résultat")
@@ -363,7 +418,11 @@ def main():
         name="scan_auto",
     )
 
-    logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min")
+    logger.info(
+        f"🚀 Bot démarré — {len(BRANDS)} marques | "
+        f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min | "
+        f"alerte sous {ALERT_PRICE_THRESHOLD}€"
+    )
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
