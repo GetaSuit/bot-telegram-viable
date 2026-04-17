@@ -11,38 +11,47 @@ MIN_PRICE = 70
 MAX_PRICE = 400
 SCAN_INTERVAL_MINUTES = 60
 
+# ── Tailles recherchées
+TARGET_SIZES = ["46", "48", "50", "52", "M", "L"]
+
+# ── Catégories ciblées (au moins un mot requis dans le titre)
+ALLOWED_KEYWORDS = [
+    # Vestes / Blazers / Costumes
+    "veste", "jacket", "blazer", "costume", "suit", "tailleur",
+    "smoking", "tuxedo", "veston",
+    # Manteaux
+    "manteau", "coat", "parka", "trench", "imperméable",
+    "duffle", "caban", "pardessus", "overcoat",
+    # Sacs
+    "sac", "bag", "tote", "cabas", "pochette", "clutch",
+    "backpack", "sac à dos", "besace", "bourse",
+]
+
 # ── Mots-clés interdits
 EXCLUDED_KEYWORDS = [
-    # Parfums
-    "parfum", "eau de", "cologne", "fragrance", "cosmetic", "perfume",
+    # Parfums / Beauté
+    "parfum", "eau de", "cologne", "fragrance", "perfume",
     "miniature", "spray", "toilette", "deodorant",
+    "cosmetic", "maquillage", "beauté", "crème", "lotion",
     # Accessoires non ciblés
-    "maquillage", "beauté", "crème", "lotion",
     "montre", "watch", "bracelet", "collier", "bague", "bijou",
     "lunettes", "sunglasses", "portefeuille", "wallet",
     "ceinture", "belt", "chapeau", "hat",
     "écharpe", "scarf", "foulard", "twilly", "soie", "silk",
     "gant", "gloves", "chaussette", "sock",
-    # High-tech / divers
-    "jouet", "toy", "livre", "book", "dvd",
-    "talkie", "imprimante", "phone", "iphone", "samsung",
-    "ordinateur", "laptop", "tablette",
-]
-
-# ── Mots-clés autorisés (au moins un requis)
-ALLOWED_KEYWORDS = [
-    # Vêtements homme
-    "veste", "jacket", "blazer", "costume", "suit",
-    "manteau", "coat", "parka", "trench", "imperméable",
+    "cravate", "tie", "noeud papillon",
+    # Chaussures (pas dans tes catégories)
+    "chaussure", "shoe", "sneaker", "boot", "botte",
+    "mocassin", "loafer", "derby", "oxford", "basket",
+    # Vêtements non ciblés
     "pantalon", "trouser", "jean", "chino",
     "chemise", "shirt", "pull", "sweater", "cardigan",
-    "smoking", "tuxedo",
-    # Chaussures
-    "chaussure", "shoe", "sneaker", "boot", "botte",
-    "mocassin", "loafer", "derby", "oxford",
-    # Sacs
-    "sac", "bag", "tote", "cabas", "pochette", "clutch",
-    "backpack", "sac à dos",
+    "polo", "t-shirt", "tee shirt",
+    # High-tech / Divers
+    "jouet", "toy", "livre", "book", "dvd", "cd",
+    "talkie", "imprimante", "phone", "iphone", "samsung",
+    "ordinateur", "laptop", "tablette", "console",
+    "voiture", "moto", "vélo",
 ]
 
 # ── Marques par tier
