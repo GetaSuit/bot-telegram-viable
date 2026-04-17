@@ -110,9 +110,19 @@ def format_article(item: dict, brand: str) -> str:
     source = item.get("source", "?")
     url = item.get("url", "")
     score = item.get("score", 0)
-    is_alert = item.get("is_alert", False)
-    runway = item.get("runway_suspect", False)
+    is_hype = item.get("is_hype", False)
     resale_info = estimate_resale(price, brand)
+
+    header = "🔥 *COUP DU JOUR* — Vu sur une star / défilé / magazine !\n" if is_hype else ""
+
+    return (
+        f"{header}"
+        f"{score_emoji(score)} Score : {score}/100\n"
+        f"🏷️ *{title}*\n"
+        f"🔍 Source : {source}\n"
+        f"{resale_info}\n"
+        f"🔗 [Voir l'annonce]({url})"
+    )
 
     header = ""
     if runway:
@@ -148,23 +158,16 @@ async def send_article(bot, item: dict, brand: str):
     keyboard = build_keyboard(item)
     image = item.get("image")
 
-    # Alerte instantanée prix bas
-    if item.get("is_alert"):
+    # Alerte coup du jour
+    if item.get("is_hype"):
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"🚨🚨 *ALERTE PRIX* — {brand} à {item.get('price')}€ ! 🚨🚨",
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
-
-    # Alerte défilé suspect
-    if item.get("runway_suspect"):
-        try:
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text="⚠️ *Article défilé détecté* — Vérifier avant achat !",
+                text=(
+                    f"🔥🔥 *COUP DU JOUR DÉTECTÉ* 🔥🔥\n"
+                    f"*{brand}* — Article tendance repéré !\n"
+                    f"Vu sur une star / défilé / magazine"
+                ),
                 parse_mode="Markdown",
             )
         except Exception:
