@@ -244,7 +244,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Bot Sourcing Luxe actif*\n\n"
         "📦 Sources : eBay · Vinted\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🚨 Alerte instantanée sous : {ALERT_PRICE_THRESHOLD}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n\n"
         "Commandes :\n"
         "/scan — Scan automatique\n"
@@ -282,7 +281,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔁 Scan auto toutes les : {SCAN_INTERVAL_MINUTES} min\n"
         f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🚨 Alerte sous : {ALERT_PRICE_THRESHOLD}€\n"
         f"🏷️ Marques surveillées : {len(BRANDS)}\n"
         f"📡 Sources : eBay · Vinted"
     )
