@@ -7,17 +7,17 @@ from config import (
     EBAY_APP_ID, EBAY_CERT_ID,
     TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
     EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
+    RUNWAY_KEYWORDS, ALERT_PRICE_THRESHOLD,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────
-# FILTRE PRIX STRICT
+# PRIX
 # ──────────────────────────────────────────
 
 def parse_price(price_raw) -> float | None:
-    """Convertit n'importe quel format de prix en float. Retourne None si impossible."""
     try:
         if isinstance(price_raw, dict):
             val = price_raw.get("amount") or price_raw.get("value", "")
@@ -28,11 +28,77 @@ def parse_price(price_raw) -> float | None:
         return None
 
 def price_ok(price_raw) -> bool:
-    """Retourne True uniquement si le prix est dans la fourchette MIN_PRICE–MAX_PRICE."""
     price = parse_price(price_raw)
     if price is None:
         return False
     return MIN_PRICE <= price <= MAX_PRICE
+
+
+# ──────────────────────────────────────────
+# SCORE DE PERTINENCE (0–100)
+# ──────────────────────────────────────────
+
+def compute_score(item: dict, brand: str) -> int:
+    """
+    Calcule un score de pertinence de 0 à 100.
+    Critères : présence marque, catégorie, prix, marge estimée.
+    """
+    score = 0
+    title = (item.get("title") or "").lower()
+    price = parse_price(item.get("price"))
+
+    # Marque présente dans le titre (+30)
+    if brand.lower() in title:
+        score += 30
+
+    # Catégorie ciblée présente (+20)
+    for kw in ALLOWED_KEYWORDS:
+        if kw.lower() in title:
+            score += 20
+            break
+
+    # Prix dans la fourchette basse = meilleure marge (+25)
+    if price is not None:
+        if MIN_PRICE <= price <= 150:
+            score += 25
+        elif 150 < price <= 250:
+            score += 15
+        elif 250 < price <= MAX_PRICE:
+            score += 5
+
+    # Source fiable (+10 eBay, +5 Vinted)
+    if item.get("source") == "eBay":
+        score += 10
+    elif item.get("source") == "Vinted":
+        score += 5
+
+    # Photo disponible (+10)
+    if item.get("image"):
+        score += 10
+
+    # Pénalité si titre trop court (probablement vague)
+    if len(title) < 20:
+        score -= 10
+
+    return max(0, min(100, score))
+
+
+# ──────────────────────────────────────────
+# DÉTECTEUR DE DÉFILÉ
+# ──────────────────────────────────────────
+
+def is_runway_suspect(item: dict) -> bool:
+    """
+    Retourne True si l'article ressemble à une pièce de défilé
+    vendue à un prix anormalement bas (probablement erreur ou arnaque).
+    """
+    title = (item.get("title") or "").lower()
+    price = parse_price(item.get("price"))
+
+    has_runway_kw = any(kw.lower() in title for kw in RUNWAY_KEYWORDS)
+    price_suspect = price is not None and price < MIN_PRICE * 0.8  # sous 80% du min
+
+    return has_runway_kw and price_suspect
 
 
 # ──────────────────────────────────────────
@@ -105,24 +171,27 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 title = item.get("title", "")
                 price_raw = item.get("price", {})
 
-                # Double vérification prix côté Python
                 if not price_ok(price_raw):
-                    logger.debug(f"[eBay] Prix hors fourchette ignoré: {price_raw} — {title}")
                     continue
-
                 if not is_relevant(title, brand):
                     continue
 
-                results.append({
+                parsed_price = parse_price(price_raw)
+                result = {
                     "title": title,
-                    "price": parse_price(price_raw),
+                    "price": parsed_price,
                     "url": item.get("itemWebUrl"),
                     "image": item.get("image", {}).get("imageUrl"),
                     "source": "eBay",
-                })
+                }
+                result["score"] = compute_score(result, brand)
+                result["runway_suspect"] = is_runway_suspect(result)
+                result["is_alert"] = parsed_price is not None and parsed_price <= ALERT_PRICE_THRESHOLD
+                results.append(result)
+
             time.sleep(0.5)
 
-        # Dédoublonnage
+        # Dédoublonnage + tri par score
         seen = set()
         unique = []
         for item in results:
@@ -130,6 +199,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 seen.add(item["url"])
                 unique.append(item)
 
+        unique.sort(key=lambda x: x["score"], reverse=True)
         logger.info(f"[eBay] {len(unique)} résultats valides pour '{brand}'")
         return unique
 
@@ -187,25 +257,28 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 title = item.get("title", "")
                 price_raw = item.get("price")
 
-                # Double vérification prix côté Python
                 if not price_ok(price_raw):
-                    logger.debug(f"[Vinted] Prix hors fourchette ignoré: {price_raw} — {title}")
                     continue
-
                 if not is_relevant(title, brand):
                     continue
 
+                parsed_price = parse_price(price_raw)
                 photo = item.get("photo") or {}
-                results.append({
+                result = {
                     "title": title,
-                    "price": parse_price(price_raw),
+                    "price": parsed_price,
                     "url": f"https://www.vinted.fr/items/{item.get('id')}",
                     "image": photo.get("url"),
                     "source": "Vinted",
-                })
+                }
+                result["score"] = compute_score(result, brand)
+                result["runway_suspect"] = is_runway_suspect(result)
+                result["is_alert"] = parsed_price is not None and parsed_price <= ALERT_PRICE_THRESHOLD
+                results.append(result)
+
             time.sleep(random.uniform(1.0, 2.0))
 
-        # Dédoublonnage
+        # Dédoublonnage + tri par score
         seen = set()
         unique = []
         for item in results:
@@ -213,6 +286,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 seen.add(item["url"])
                 unique.append(item)
 
+        unique.sort(key=lambda x: x["score"], reverse=True)
         logger.info(f"[Vinted] {len(unique)} résultats valides pour '{brand}'")
         return unique
 
@@ -229,4 +303,5 @@ def search_all_sources(brand: str):
     all_results = []
     all_results.extend(search_ebay(brand))
     all_results.extend(search_vinted(brand))
+    all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return all_results
