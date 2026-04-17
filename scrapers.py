@@ -7,6 +7,7 @@ from config import (
     EBAY_APP_ID, EBAY_CERT_ID,
     TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
     EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
+    TARGET_SIZES,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,18 +18,32 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────
 
 def is_relevant(title: str, brand: str) -> bool:
+    """
+    Retourne True si :
+    1. La marque est dans le titre
+    2. Aucun mot interdit n'est présent
+    3. Au moins un mot de catégorie autorisée est présent
+    """
     if not title or not brand:
         return False
+
     title_lower = title.lower()
+
+    # 1. Marque présente
     if brand.lower() not in title_lower:
         return False
+
+    # 2. Aucun mot interdit
     for kw in EXCLUDED_KEYWORDS:
         if kw.lower() in title_lower:
             return False
+
+    # 3. Au moins une catégorie ciblée
     for kw in ALLOWED_KEYWORDS:
         if kw.lower() in title_lower:
             return True
-    return True
+
+    return False  # rien de reconnu → on rejette
 
 
 # ──────────────────────────────────────────
@@ -37,7 +52,9 @@ def is_relevant(title: str, brand: str) -> bool:
 
 def get_ebay_token():
     import base64
-    credentials = base64.b64encode(f"{EBAY_APP_ID}:{EBAY_CERT_ID}".encode()).decode()
+    credentials = base64.b64encode(
+        f"{EBAY_APP_ID}:{EBAY_CERT_ID}".encode()
+    ).decode()
     r = requests.post(
         "https://api.ebay.com/identity/v1/oauth2/token",
         headers={
@@ -56,34 +73,53 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         if not token:
             logger.error("[eBay] Token introuvable")
             return []
-        params = {
-            "q": brand,
-            "filter": f"price:[{min_price}..{max_price}],currency:EUR,itemLocationCountry:FR",
-            "sort": "newlyListed",
-            "limit": 10,
-        }
-        r = requests.get(
-            "https://api.ebay.com/buy/browse/v1/item_summary/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=15,
-        )
-        r.raise_for_status()
-        for item in r.json().get("itemSummaries", []):
-            title = item.get("title", "")
-            if not is_relevant(title, brand):
-                continue
-            results.append({
-                "title": title,
-                "price": item.get("price", {}).get("value", "?"),
-                "url": item.get("itemWebUrl"),
-                "image": item.get("image", {}).get("imageUrl"),
-                "source": "eBay",
-            })
-        logger.info(f"[eBay] {len(results)} résultats pertinents pour '{brand}'")
+
+        # Recherche par catégorie veste/manteau/sac + marque
+        for category in ["veste", "manteau", "sac"]:
+            params = {
+                "q": f"{brand} {category}",
+                "filter": (
+                    f"price:[{min_price}..{max_price}],"
+                    f"currency:EUR,"
+                    f"itemLocationCountry:FR"
+                ),
+                "sort": "newlyListed",
+                "limit": 10,
+            }
+            r = requests.get(
+                "https://api.ebay.com/buy/browse/v1/item_summary/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=15,
+            )
+            r.raise_for_status()
+            for item in r.json().get("itemSummaries", []):
+                title = item.get("title", "")
+                if not is_relevant(title, brand):
+                    continue
+                results.append({
+                    "title": title,
+                    "price": item.get("price", {}).get("value", "?"),
+                    "url": item.get("itemWebUrl"),
+                    "image": item.get("image", {}).get("imageUrl"),
+                    "source": "eBay",
+                })
+            time.sleep(0.5)
+
+        # Dédoublonnage par URL
+        seen = set()
+        unique = []
+        for r in results:
+            if r["url"] not in seen:
+                seen.add(r["url"])
+                unique.append(r)
+
+        logger.info(f"[eBay] {len(unique)} résultats pertinents pour '{brand}'")
+        return unique
+
     except Exception as e:
         logger.error(f"[eBay] Erreur '{brand}': {e}")
-    return results
+        return []
 
 
 # ──────────────────────────────────────────
@@ -119,38 +155,53 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
     results = []
     try:
         _vinted_init_session()
-        params = {
-            "search_text": brand,
-            "price_from": min_price,
-            "price_to": max_price,
-            "currency": "EUR",
-            "per_page": 20,
-            "order": "newest_first",
-        }
-        r = VINTED_SESSION.get(
-            "https://www.vinted.fr/api/v2/catalog/items",
-            params=params,
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-        for item in data.get("items", []):
-            title = item.get("title", "")
-            if not is_relevant(title, brand):
-                continue
-            photo = item.get("photo") or {}
-            results.append({
-                "title": title,
-                "price": _parse_vinted_price(item.get("price")),
-                "url": f"https://www.vinted.fr/items/{item.get('id')}",
-                "image": photo.get("url"),
-                "source": "Vinted",
-            })
-        logger.info(f"[Vinted] {len(results)} résultats pertinents pour '{brand}'")
-        time.sleep(random.uniform(2.0, 4.0))
+
+        # Recherche par catégorie ciblée
+        for category in ["veste", "manteau", "sac"]:
+            params = {
+                "search_text": f"{brand} {category}",
+                "price_from": min_price,
+                "price_to": max_price,
+                "currency": "EUR",
+                "per_page": 20,
+                "order": "newest_first",
+            }
+            r = VINTED_SESSION.get(
+                "https://www.vinted.fr/api/v2/catalog/items",
+                params=params,
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            for item in data.get("items", []):
+                title = item.get("title", "")
+                if not is_relevant(title, brand):
+                    continue
+                photo = item.get("photo") or {}
+                results.append({
+                    "title": title,
+                    "price": _parse_vinted_price(item.get("price")),
+                    "url": f"https://www.vinted.fr/items/{item.get('id')}",
+                    "image": photo.get("url"),
+                    "source": "Vinted",
+                })
+            time.sleep(random.uniform(1.0, 2.0))
+
+        # Dédoublonnage
+        seen = set()
+        unique = []
+        for r in results:
+            if r["url"] not in seen:
+                seen.add(r["url"])
+                unique.append(r)
+
+        logger.info(f"[Vinted] {len(unique)} résultats pertinents pour '{brand}'")
+        return unique
+
     except Exception as e:
         logger.error(f"[Vinted] Erreur '{brand}': {e}")
-    return results
+        return []
 
 
 # ──────────────────────────────────────────
