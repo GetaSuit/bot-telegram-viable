@@ -360,7 +360,12 @@ def main():
     )
 
     logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+   # APRÈS
+app.run_polling(
+    allowed_updates=Update.ALL_TYPES,
+    drop_pending_updates=True,
+    close_loop=False,
+)
 
 
 if __name__ == "__main__":
