@@ -7,7 +7,7 @@ from config import (
     EBAY_APP_ID, EBAY_CERT_ID,
     TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
     EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
-    RUNWAY_KEYWORDS, ALERT_PRICE_THRESHOLD,
+    HYPE_KEYWORDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,70 +35,66 @@ def price_ok(price_raw) -> bool:
 
 
 # ──────────────────────────────────────────
+# DÉTECTEUR COUP DU JOUR
+# ──────────────────────────────────────────
+
+def is_hype(title: str, description: str = "") -> bool:
+    """
+    Retourne True si l'article est au goût du jour :
+    vu sur une star, en magazine, défilé, collab, édition limitée...
+    """
+    text = (title + " " + description).lower()
+    return any(kw.lower() in text for kw in HYPE_KEYWORDS)
+
+
+# ──────────────────────────────────────────
 # SCORE DE PERTINENCE (0–100)
 # ──────────────────────────────────────────
 
 def compute_score(item: dict, brand: str) -> int:
-    """
-    Calcule un score de pertinence de 0 à 100.
-    Critères : présence marque, catégorie, prix, marge estimée.
-    """
     score = 0
     title = (item.get("title") or "").lower()
+    desc = (item.get("description") or "").lower()
     price = parse_price(item.get("price"))
 
-    # Marque présente dans le titre (+30)
+    # Marque dans le titre (+25)
     if brand.lower() in title:
-        score += 30
+        score += 25
 
-    # Catégorie ciblée présente (+20)
+    # Catégorie ciblée (+20)
     for kw in ALLOWED_KEYWORDS:
         if kw.lower() in title:
             score += 20
             break
 
-    # Prix dans la fourchette basse = meilleure marge (+25)
+    # Coup du jour détecté (+30 — bonus majeur)
+    if is_hype(title, desc):
+        score += 30
+
+    # Prix dans la fourchette basse = meilleure marge (+15)
     if price is not None:
         if MIN_PRICE <= price <= 150:
-            score += 25
-        elif 150 < price <= 250:
             score += 15
+        elif 150 < price <= 250:
+            score += 10
         elif 250 < price <= MAX_PRICE:
             score += 5
 
-    # Source fiable (+10 eBay, +5 Vinted)
+    # Source (+10 eBay, +5 Vinted)
     if item.get("source") == "eBay":
         score += 10
     elif item.get("source") == "Vinted":
         score += 5
 
-    # Photo disponible (+10)
+    # Photo disponible (+5)
     if item.get("image"):
-        score += 10
+        score += 5
 
-    # Pénalité si titre trop court (probablement vague)
+    # Titre trop court (-10)
     if len(title) < 20:
         score -= 10
 
     return max(0, min(100, score))
-
-
-# ──────────────────────────────────────────
-# DÉTECTEUR DE DÉFILÉ
-# ──────────────────────────────────────────
-
-def is_runway_suspect(item: dict) -> bool:
-    """
-    Retourne True si l'article ressemble à une pièce de défilé
-    vendue à un prix anormalement bas (probablement erreur ou arnaque).
-    """
-    title = (item.get("title") or "").lower()
-    price = parse_price(item.get("price"))
-
-    has_runway_kw = any(kw.lower() in title for kw in RUNWAY_KEYWORDS)
-    price_suspect = price is not None and price < MIN_PRICE * 0.8  # sous 80% du min
-
-    return has_runway_kw and price_suspect
 
 
 # ──────────────────────────────────────────
@@ -183,10 +179,10 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     "url": item.get("itemWebUrl"),
                     "image": item.get("image", {}).get("imageUrl"),
                     "source": "eBay",
+                    "description": "",
                 }
+                result["is_hype"] = is_hype(title)
                 result["score"] = compute_score(result, brand)
-                result["runway_suspect"] = is_runway_suspect(result)
-                result["is_alert"] = parsed_price is not None and parsed_price <= ALERT_PRICE_THRESHOLD
                 results.append(result)
 
             time.sleep(0.5)
@@ -200,7 +196,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 unique.append(item)
 
         unique.sort(key=lambda x: x["score"], reverse=True)
-        logger.info(f"[eBay] {len(unique)} résultats valides pour '{brand}'")
+        logger.info(f"[eBay] {len(unique)} résultats pour '{brand}'")
         return unique
 
     except Exception as e:
@@ -256,6 +252,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
             for item in r.json().get("items", []):
                 title = item.get("title", "")
                 price_raw = item.get("price")
+                desc = item.get("description", "") or ""
 
                 if not price_ok(price_raw):
                     continue
@@ -270,10 +267,10 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     "url": f"https://www.vinted.fr/items/{item.get('id')}",
                     "image": photo.get("url"),
                     "source": "Vinted",
+                    "description": desc,
                 }
+                result["is_hype"] = is_hype(title, desc)
                 result["score"] = compute_score(result, brand)
-                result["runway_suspect"] = is_runway_suspect(result)
-                result["is_alert"] = parsed_price is not None and parsed_price <= ALERT_PRICE_THRESHOLD
                 results.append(result)
 
             time.sleep(random.uniform(1.0, 2.0))
@@ -287,7 +284,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 unique.append(item)
 
         unique.sort(key=lambda x: x["score"], reverse=True)
-        logger.info(f"[Vinted] {len(unique)} résultats valides pour '{brand}'")
+        logger.info(f"[Vinted] {len(unique)} résultats pour '{brand}'")
         return unique
 
     except Exception as e:
