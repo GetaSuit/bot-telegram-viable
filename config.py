@@ -11,21 +11,8 @@ MIN_PRICE = 70
 MAX_PRICE = 400
 SCAN_INTERVAL_MINUTES = 60
 
-# ── Tailles recherchées
-TARGET_SIZES = ["46", "48", "50", "52", "M", "L"]
-
-# ── Catégories ciblées (au moins un mot requis dans le titre)
-ALLOWED_KEYWORDS = [
-    # Vestes / Blazers / Costumes
-    "veste", "jacket", "blazer", "costume", "suit", "tailleur",
-    "smoking", "tuxedo", "veston",
-    # Manteaux
-    "manteau", "coat", "parka", "trench", "imperméable",
-    "duffle", "caban", "pardessus", "overcoat",
-    # Sacs
-    "sac", "bag", "tote", "cabas", "pochette", "clutch",
-    "backpack", "sac à dos", "besace", "bourse",
-]
+# ── Alerte instantanée : articles sous ce prix = notification urgente
+ALERT_PRICE_THRESHOLD = 150
 
 # ── Mots-clés interdits
 EXCLUDED_KEYWORDS = [
@@ -40,7 +27,7 @@ EXCLUDED_KEYWORDS = [
     "écharpe", "scarf", "foulard", "twilly", "soie", "silk",
     "gant", "gloves", "chaussette", "sock",
     "cravate", "tie", "noeud papillon",
-    # Chaussures (pas dans tes catégories)
+    # Chaussures
     "chaussure", "shoe", "sneaker", "boot", "botte",
     "mocassin", "loafer", "derby", "oxford", "basket",
     # Vêtements non ciblés
@@ -52,6 +39,28 @@ EXCLUDED_KEYWORDS = [
     "talkie", "imprimante", "phone", "iphone", "samsung",
     "ordinateur", "laptop", "tablette", "console",
     "voiture", "moto", "vélo",
+    # Défilés / Pièces de collection (détecteur)
+    "défilé", "runway", "collection", "showcase", "editorial",
+    "lookbook", "campaign", "advertising", "publicité",
+    "press", "presse", "archive", "sample", "prototype",
+    "display", "exhibition", "musée", "museum",
+]
+
+# ── Mots défilé : déclenchent une alerte spéciale si prix suspect
+RUNWAY_KEYWORDS = [
+    "défilé", "runway", "collection", "archive", "sample",
+    "prototype", "editorial", "showcase", "exhibition",
+    "press", "presse", "lookbook",
+]
+
+# ── Catégories ciblées
+ALLOWED_KEYWORDS = [
+    "veste", "jacket", "blazer", "costume", "suit",
+    "smoking", "tuxedo", "veston", "tailleur",
+    "manteau", "coat", "parka", "trench", "imperméable",
+    "duffle", "caban", "pardessus", "overcoat",
+    "sac", "bag", "tote", "cabas", "pochette", "clutch",
+    "backpack", "sac à dos", "besace",
 ]
 
 # ── Marques par tier
@@ -63,6 +72,7 @@ TIER1_BRANDS = [
 TIER2_BRANDS = [
     "Zegna", "Canali", "Isaia", "Corneliani", "Boglioli",
     "Tom Ford", "Gucci", "Prada", "Balenciaga", "Bottega Veneta",
+    "Ralph Lauren Purple Label",
 ]
 
 TIER3_BRANDS = [
