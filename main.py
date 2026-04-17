@@ -33,10 +33,6 @@ from config import (
 from scrapers import search_ebay, search_vinted, search_all_sources
 from database import init_db, is_already_seen, mark_as_seen
 
-# ──────────────────────────────────────────
-# LOGGING
-# ──────────────────────────────────────────
-
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -59,7 +55,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     server = HTTPServer(("0.0.0.0", 10000), HealthHandler)
-    logger.info("🌐 Serveur HTTP keep-alive démarré sur port 10000")
+    logger.info("🌐 Serveur HTTP démarré sur port 10000")
     server.serve_forever()
 
 
@@ -91,7 +87,7 @@ def estimate_resale(price_raw, brand: str) -> str:
             f"✅ Marge brute : +{profit:.0f}€"
         )
     except Exception as e:
-        logger.warning(f"[estimate_resale] Erreur: {e} — raw: {price_raw}")
+        logger.warning(f"[estimate_resale] Erreur: {e}")
         return "💰 Prix non disponible"
 
 def score_emoji(score: int) -> str:
@@ -111,24 +107,7 @@ def format_article(item: dict, brand: str) -> str:
     score = item.get("score", 0)
     is_hype = item.get("is_hype", False)
     resale_info = estimate_resale(price, brand)
-
     header = "🔥 *COUP DU JOUR* — Vu sur une star / défilé / magazine !\n" if is_hype else ""
-
-    return (
-        f"{header}"
-        f"{score_emoji(score)} Score : {score}/100\n"
-        f"🏷️ *{title}*\n"
-        f"🔍 Source : {source}\n"
-        f"{resale_info}\n"
-        f"🔗 [Voir l'annonce]({url})"
-    )
-
-    header = ""
-    if runway:
-        header = "⚠️ *ATTENTION* — Article défilé suspect\n"
-    elif is_alert:
-        header = "🚨 *ALERTE PRIX* — Opportunité rare !\n"
-
     return (
         f"{header}"
         f"{score_emoji(score)} Score : {score}/100\n"
@@ -157,7 +136,6 @@ async def send_article(bot, item: dict, brand: str):
     keyboard = build_keyboard(item)
     image = item.get("image")
 
-    # Alerte coup du jour
     if item.get("is_hype"):
         try:
             await bot.send_message(
@@ -189,7 +167,7 @@ async def send_article(bot, item: dict, brand: str):
                 reply_markup=keyboard,
             )
     except Exception as e:
-        logger.warning(f"[send_article] Photo échouée, fallback texte: {e}")
+        logger.warning(f"[send_article] Photo échouée: {e}")
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
@@ -419,8 +397,7 @@ def main():
 
     logger.info(
         f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min | "
-        f"alerte sous {ALERT_PRICE_THRESHOLD}€"
+        f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min"
     )
 
     while True:
