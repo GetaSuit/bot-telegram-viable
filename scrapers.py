@@ -7,43 +7,51 @@ from config import (
     EBAY_APP_ID, EBAY_CERT_ID,
     TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
     EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
-    TARGET_SIZES,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────
-# FILTRE DE PERTINENCE
+# FILTRE PRIX STRICT
+# ──────────────────────────────────────────
+
+def parse_price(price_raw) -> float | None:
+    """Convertit n'importe quel format de prix en float. Retourne None si impossible."""
+    try:
+        if isinstance(price_raw, dict):
+            val = price_raw.get("amount") or price_raw.get("value", "")
+        else:
+            val = price_raw
+        return float(str(val).replace(",", ".").replace("€", "").replace(" ", "").strip())
+    except Exception:
+        return None
+
+def price_ok(price_raw) -> bool:
+    """Retourne True uniquement si le prix est dans la fourchette MIN_PRICE–MAX_PRICE."""
+    price = parse_price(price_raw)
+    if price is None:
+        return False
+    return MIN_PRICE <= price <= MAX_PRICE
+
+
+# ──────────────────────────────────────────
+# FILTRE PERTINENCE
 # ──────────────────────────────────────────
 
 def is_relevant(title: str, brand: str) -> bool:
-    """
-    Retourne True si :
-    1. La marque est dans le titre
-    2. Aucun mot interdit n'est présent
-    3. Au moins un mot de catégorie autorisée est présent
-    """
     if not title or not brand:
         return False
-
     title_lower = title.lower()
-
-    # 1. Marque présente
     if brand.lower() not in title_lower:
         return False
-
-    # 2. Aucun mot interdit
     for kw in EXCLUDED_KEYWORDS:
         if kw.lower() in title_lower:
             return False
-
-    # 3. Au moins une catégorie ciblée
     for kw in ALLOWED_KEYWORDS:
         if kw.lower() in title_lower:
             return True
-
-    return False  # rien de reconnu → on rejette
+    return False
 
 
 # ──────────────────────────────────────────
@@ -74,8 +82,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
             logger.error("[eBay] Token introuvable")
             return []
 
-        # Recherche par catégorie veste/manteau/sac + marque
-        for category in ["veste", "manteau", "sac"]:
+        for category in ["veste blazer", "manteau coat", "sac bag"]:
             params = {
                 "q": f"{brand} {category}",
                 "filter": (
@@ -84,7 +91,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     f"itemLocationCountry:FR"
                 ),
                 "sort": "newlyListed",
-                "limit": 10,
+                "limit": 20,
             }
             r = requests.get(
                 "https://api.ebay.com/buy/browse/v1/item_summary/search",
@@ -93,28 +100,37 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 timeout=15,
             )
             r.raise_for_status()
+
             for item in r.json().get("itemSummaries", []):
                 title = item.get("title", "")
+                price_raw = item.get("price", {})
+
+                # Double vérification prix côté Python
+                if not price_ok(price_raw):
+                    logger.debug(f"[eBay] Prix hors fourchette ignoré: {price_raw} — {title}")
+                    continue
+
                 if not is_relevant(title, brand):
                     continue
+
                 results.append({
                     "title": title,
-                    "price": item.get("price", {}).get("value", "?"),
+                    "price": parse_price(price_raw),
                     "url": item.get("itemWebUrl"),
                     "image": item.get("image", {}).get("imageUrl"),
                     "source": "eBay",
                 })
             time.sleep(0.5)
 
-        # Dédoublonnage par URL
+        # Dédoublonnage
         seen = set()
         unique = []
-        for r in results:
-            if r["url"] not in seen:
-                seen.add(r["url"])
-                unique.append(r)
+        for item in results:
+            if item["url"] not in seen:
+                seen.add(item["url"])
+                unique.append(item)
 
-        logger.info(f"[eBay] {len(unique)} résultats pertinents pour '{brand}'")
+        logger.info(f"[eBay] {len(unique)} résultats valides pour '{brand}'")
         return unique
 
     except Exception as e:
@@ -146,18 +162,12 @@ def _vinted_init_session():
         logger.error(f"[Vinted] Init session: {e}")
         return False
 
-def _parse_vinted_price(price_raw) -> str:
-    if isinstance(price_raw, dict):
-        return str(price_raw.get("amount", "?"))
-    return str(price_raw) if price_raw else "?"
-
 def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
     results = []
     try:
         _vinted_init_session()
 
-        # Recherche par catégorie ciblée
-        for category in ["veste", "manteau", "sac"]:
+        for category in ["veste blazer", "manteau", "sac"]:
             params = {
                 "search_text": f"{brand} {category}",
                 "price_from": min_price,
@@ -172,16 +182,23 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 timeout=15,
             )
             r.raise_for_status()
-            data = r.json()
 
-            for item in data.get("items", []):
+            for item in r.json().get("items", []):
                 title = item.get("title", "")
+                price_raw = item.get("price")
+
+                # Double vérification prix côté Python
+                if not price_ok(price_raw):
+                    logger.debug(f"[Vinted] Prix hors fourchette ignoré: {price_raw} — {title}")
+                    continue
+
                 if not is_relevant(title, brand):
                     continue
+
                 photo = item.get("photo") or {}
                 results.append({
                     "title": title,
-                    "price": _parse_vinted_price(item.get("price")),
+                    "price": parse_price(price_raw),
                     "url": f"https://www.vinted.fr/items/{item.get('id')}",
                     "image": photo.get("url"),
                     "source": "Vinted",
@@ -191,12 +208,12 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
         # Dédoublonnage
         seen = set()
         unique = []
-        for r in results:
-            if r["url"] not in seen:
-                seen.add(r["url"])
-                unique.append(r)
+        for item in results:
+            if item["url"] not in seen:
+                seen.add(item["url"])
+                unique.append(item)
 
-        logger.info(f"[Vinted] {len(unique)} résultats pertinents pour '{brand}'")
+        logger.info(f"[Vinted] {len(unique)} résultats valides pour '{brand}'")
         return unique
 
     except Exception as e:
