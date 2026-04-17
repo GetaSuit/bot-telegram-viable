@@ -155,8 +155,8 @@ async def send_article(bot, item: dict, brand: str):
 # ──────────────────────────────────────────
 
 _scan_cursor = {"index": 0}
-BATCH_SIZE = 2
-MAX_PER_BRAND = 1
+BATCH_SIZE = 3
+MAX_PER_BRAND = 5
 
 async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     start = _scan_cursor["index"]
@@ -281,7 +281,7 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    for item in new_items[:5]:
+    for item in new_items[:15]:
         url = item.get("url", "")
         if url:
             mark_as_seen(url)
@@ -360,12 +360,11 @@ def main():
     )
 
     logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min")
-   # APRÈS
-app.run_polling(
-    allowed_updates=Update.ALL_TYPES,
-    drop_pending_updates=True,
-    close_loop=False,
-)
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        close_loop=False,
+    )
 
 
 if __name__ == "__main__":
