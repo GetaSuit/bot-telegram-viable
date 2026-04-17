@@ -75,9 +75,12 @@ def get_tier(brand: str) -> str:
         return "T2"
     return "T3"
 
-def estimate_resale(price_str: str, brand: str) -> str:
+def estimate_resale(price_raw, brand: str) -> str:
     try:
-        price = float(str(price_str).replace(",", ".").replace("€", "").strip())
+        # Accepte float, int ou string
+        price = float(str(price_raw).replace(",", ".").replace("€", "").strip())
+        if price <= 0:
+            return "💰 Prix non disponible"
         tier = get_tier(brand)
         mult = MULTIPLIERS[tier]
         resale = price * mult
@@ -87,7 +90,8 @@ def estimate_resale(price_str: str, brand: str) -> str:
             f"📈 Revente estimée ({tier} ×{mult}) : {resale:.0f}€\n"
             f"✅ Marge brute : +{profit:.0f}€"
         )
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[estimate_resale] Erreur: {e} — raw: {price_raw}")
         return "💰 Prix non disponible"
 
 def format_article(item: dict, brand: str) -> str:
