@@ -13,21 +13,17 @@ SCAN_INTERVAL_MINUTES = 60
 
 # ── Mots-clés déclencheurs d'alerte "coup du jour"
 HYPE_KEYWORDS = [
-    # Célébrités / Stars
     "celebrity", "célébrité", "star", "vu sur", "porté par",
     "worn by", "as seen on", "spotted", "paparazzi",
     "kanye", "jay-z", "rihanna", "beyonce", "drake",
     "harry styles", "david beckham", "zendaya", "kendall",
-    # Magazines / Presse
     "vogue", "gq", "esquire", "hypebeast", "highsnobiety",
     "mr porter", "editorial", "featured", "magazine",
     "lookbook", "campaign", "publicité", "press",
-    # Défilés / Mode
     "défilé", "runway", "fashion week", "fashion show",
     "collection", "fw", "ss", "aw", "pre-fall",
     "capsule", "collab", "collaboration", "limited",
     "édition limitée", "limited edition", "exclusive",
-    # Tendance / Hype
     "tendance", "trend", "hype", "it-bag", "it bag",
     "must have", "must-have", "iconic", "iconique",
     "grail", "graal", "rare", "introuvable", "sought",
@@ -36,25 +32,20 @@ HYPE_KEYWORDS = [
 
 # ── Mots-clés interdits
 EXCLUDED_KEYWORDS = [
-    # Parfums / Beauté
     "parfum", "eau de", "cologne", "fragrance", "perfume",
     "miniature", "spray", "toilette", "deodorant",
     "cosmetic", "maquillage", "beauté", "crème", "lotion",
-    # Accessoires non ciblés
     "montre", "watch", "bracelet", "collier", "bague", "bijou",
     "lunettes", "sunglasses", "portefeuille", "wallet",
     "ceinture", "belt", "chapeau", "hat",
     "écharpe", "scarf", "foulard", "twilly", "soie", "silk",
     "gant", "gloves", "chaussette", "sock",
     "cravate", "tie", "noeud papillon",
-    # Chaussures
     "chaussure", "shoe", "sneaker", "boot", "botte",
     "mocassin", "loafer", "derby", "oxford", "basket",
-    # Vêtements non ciblés
     "pantalon", "trouser", "jean", "chino",
     "chemise", "shirt", "pull", "sweater", "cardigan",
     "polo", "t-shirt", "tee shirt",
-    # High-tech / Divers
     "jouet", "toy", "livre", "book", "dvd", "cd",
     "talkie", "imprimante", "phone", "iphone", "samsung",
     "ordinateur", "laptop", "tablette", "console",
@@ -75,19 +66,22 @@ ALLOWED_KEYWORDS = [
 TIER1_BRANDS = [
     "Hermès", "Chanel", "Louis Vuitton", "Dior", "Brioni",
     "Kiton", "Loro Piana", "Berluti",
+    "Cesare Attolini", "Stefano Ricci",
 ]
 
 TIER2_BRANDS = [
-    "Zegna", "Canali", "Isaia", "Corneliani", "Boglioli",
+    "Zegna", "Canali", "Isaia", "Corneliani",
     "Tom Ford", "Gucci", "Prada", "Balenciaga", "Bottega Veneta",
-    "Ralph Lauren Purple Label",
+    "Ralph Lauren Purple Label", "Saint Laurent",
+    "Caruso", "Dries Van Noten",
 ]
 
 TIER3_BRANDS = [
-    "Burberry", "Hugo Boss", "Ralph Lauren", "Lanvin", "Givenchy",
-    "Valentino", "Versace", "Dolce & Gabbana", "Moncler", "Stone Island",
-    "Brunello Cucinelli", "Paul Smith", "Sandro", "A.P.C.", "Ami Paris",
+    "Burberry", "Ralph Lauren", "Givenchy",
+    "Valentino", "Versace", "Dolce & Gabbana",
+    "Brunello Cucinelli", "Ami Paris",
     "Celine", "Loewe", "Fendi", "Balmain", "Acne Studios",
+    "Vivienne Westwood",
 ]
 
 BRANDS = TIER1_BRANDS + TIER2_BRANDS + TIER3_BRANDS
