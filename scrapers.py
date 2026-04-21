@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
     EBAY_APP_ID, EBAY_CERT_ID,
-    TIER1_BRANDS, TIER2_BRANDS, TIER3_BRANDS,
     EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
     HYPE_KEYWORDS,
 )
@@ -14,7 +13,6 @@ from ai_scorer import analyze_article
 
 logger = logging.getLogger(__name__)
 
-# Annonces de plus de 30 jours ignorées
 MAX_AGE_DAYS = 30
 
 
@@ -44,9 +42,8 @@ def price_ok(price_raw) -> bool:
 # ──────────────────────────────────────────
 
 def is_recent(timestamp: int) -> bool:
-    """Retourne True si l'annonce a moins de MAX_AGE_DAYS jours."""
     if not timestamp:
-        return True  # si pas de date, on laisse passer
+        return True
     try:
         item_date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
         days_old = (datetime.now(tz=timezone.utc) - item_date).days
@@ -62,42 +59,6 @@ def is_recent(timestamp: int) -> bool:
 def is_hype(title: str, description: str = "") -> bool:
     text = (title + " " + description).lower()
     return any(kw.lower() in text for kw in HYPE_KEYWORDS)
-
-
-# ──────────────────────────────────────────
-# SCORE TECHNIQUE (0–100)
-# ──────────────────────────────────────────
-
-def compute_base_score(item: dict, brand: str) -> int:
-    score = 0
-    title = (item.get("title") or "").lower()
-    price = parse_price(item.get("price"))
-
-    if brand.lower() in title:
-        score += 25
-    for kw in ALLOWED_KEYWORDS:
-        if kw.lower() in title:
-            score += 20
-            break
-    if is_hype(title):
-        score += 15
-    if price is not None:
-        if MIN_PRICE <= price <= 150:
-            score += 15
-        elif 150 < price <= 250:
-            score += 10
-        elif 250 < price <= MAX_PRICE:
-            score += 5
-    if item.get("source") == "eBay":
-        score += 10
-    elif item.get("source") == "Vinted":
-        score += 5
-    if item.get("image"):
-        score += 5
-    if len(title) < 20:
-        score -= 10
-
-    return max(0, min(100, score))
 
 
 # ──────────────────────────────────────────
@@ -147,13 +108,6 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
             logger.error("[eBay] Token introuvable")
             return []
 
-        # Date limite : articles des 30 derniers jours
-        date_limit = datetime.utcnow().strftime("%Y-%m-%dT00:00:00Z")
-        cutoff = datetime.now(tz=timezone.utc).replace(
-            day=datetime.now().day - MAX_AGE_DAYS
-            if datetime.now().day > MAX_AGE_DAYS else 1
-        )
-
         for category in ["veste blazer", "manteau coat", "sac bag"]:
             params = {
                 "q": f"{brand} {category}",
@@ -182,60 +136,52 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 if not is_relevant(title, brand):
                     continue
 
-                # Filtre date eBay via itemCreationDate
+                # Filtre date
                 item_date_str = item.get("itemCreationDate", "")
                 if item_date_str:
                     try:
                         item_date = datetime.fromisoformat(
                             item_date_str.replace("Z", "+00:00")
                         )
-                        days_old = (datetime.now(tz=timezone.utc) - item_date).days
-                        if days_old > MAX_AGE_DAYS:
-                            logger.debug(f"[eBay] Trop ancien ({days_old}j): {title}")
+                        if (datetime.now(tz=timezone.utc) - item_date).days > MAX_AGE_DAYS:
                             continue
                     except Exception:
                         pass
 
                 parsed_price = parse_price(price_raw)
-                result = {
+
+                # Claude analyse et décide
+                ai = analyze_article(
+                    title=title,
+                    brand=brand,
+                    price=parsed_price or 0,
+                    source="eBay",
+                )
+
+                if not ai.get("keep", True):
+                    logger.info(f"[eBay] Ignoré par IA: {title} — {ai.get('reason', '')}")
+                    continue
+
+                if not ai.get("is_authentic", True):
+                    logger.info(f"[eBay] Suspect ignoré: {title}")
+                    continue
+
+                results.append({
                     "title": title,
                     "price": parsed_price,
                     "url": item.get("itemWebUrl"),
                     "image": item.get("image", {}).get("imageUrl"),
                     "source": "eBay",
-                    "description": "",
-                }
-
-                base = compute_base_score(result, brand)
-
-                if base > 80:
-                    ai = analyze_article(
-                        title=title,
-                        brand=brand,
-                        price=parsed_price or 0,
-                        source="eBay",
-                    )
-                    if not ai.get("is_authentic", True):
-                        logger.info(f"[eBay] Suspect ignoré: {title}")
-                        continue
-                    result["ai_score"] = ai.get("ai_score", 50)
-                    result["is_trending"] = ai.get("is_trending", False)
-                    result["ai_verdict"] = ai.get("verdict", "correct")
-                    result["ai_reason"] = ai.get("reason", "")
-                    result["is_hype"] = is_hype(title) or ai.get("is_trending", False)
-                    result["score"] = min(100, int(base * 0.4 + ai.get("ai_score", 50) * 0.6))
-                else:
-                    result["ai_score"] = 50
-                    result["is_trending"] = False
-                    result["ai_verdict"] = "correct"
-                    result["ai_reason"] = ""
-                    result["is_hype"] = is_hype(title)
-                    result["score"] = base
-
-                results.append(result)
+                    "is_trending": ai.get("is_trending", False),
+                    "is_hype": is_hype(title) or ai.get("is_trending", False),
+                    "ai_verdict": ai.get("verdict", "correct"),
+                    "ai_reason": ai.get("reason", ""),
+                    "market_value": ai.get("market_value"),
+                })
 
             time.sleep(0.5)
 
+        # Dédoublonnage
         seen = set()
         unique = []
         for item in results:
@@ -243,8 +189,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 seen.add(item["url"])
                 unique.append(item)
 
-        unique.sort(key=lambda x: x["score"], reverse=True)
-        logger.info(f"[eBay] {len(unique)} résultats pour '{brand}'")
+        logger.info(f"[eBay] {len(unique)} articles validés par IA pour '{brand}'")
         return unique
 
     except Exception as e:
@@ -278,15 +223,8 @@ VINTED_SESSION.headers.update({
 
 def _vinted_init_session():
     try:
-        VINTED_SESSION.get(
-            "https://www.vinted.fr",
-            timeout=10,
-            allow_redirects=True,
-        )
-        VINTED_SESSION.get(
-            "https://www.vinted.fr/api/v2/configurations",
-            timeout=10,
-        )
+        VINTED_SESSION.get("https://www.vinted.fr", timeout=10, allow_redirects=True)
+        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
         return True
     except Exception as e:
         logger.error(f"[Vinted] Init session: {e}")
@@ -323,53 +261,46 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 if not is_relevant(title, brand):
                     continue
 
-                # Filtre date Vinted
+                # Filtre date
                 timestamp = item.get("updated_at_ts") or item.get("created_at_ts", 0)
                 if timestamp and not is_recent(timestamp):
-                    logger.debug(f"[Vinted] Trop ancien: {title}")
                     continue
 
                 parsed_price = parse_price(price_raw)
+
+                # Claude analyse et décide
+                ai = analyze_article(
+                    title=title,
+                    brand=brand,
+                    price=parsed_price or 0,
+                    source="Vinted",
+                )
+
+                if not ai.get("keep", True):
+                    logger.info(f"[Vinted] Ignoré par IA: {title} — {ai.get('reason', '')}")
+                    continue
+
+                if not ai.get("is_authentic", True):
+                    logger.info(f"[Vinted] Suspect ignoré: {title}")
+                    continue
+
                 photo = item.get("photo") or {}
-                result = {
+                results.append({
                     "title": title,
                     "price": parsed_price,
                     "url": f"https://www.vinted.fr/items/{item.get('id')}",
                     "image": photo.get("url"),
                     "source": "Vinted",
-                    "description": desc,
-                }
-
-                base = compute_base_score(result, brand)
-
-                if base > 80:
-                    ai = analyze_article(
-                        title=title,
-                        brand=brand,
-                        price=parsed_price or 0,
-                        source="Vinted",
-                    )
-                    if not ai.get("is_authentic", True):
-                        logger.info(f"[Vinted] Suspect ignoré: {title}")
-                        continue
-                    result["ai_score"] = ai.get("ai_score", 50)
-                    result["is_trending"] = ai.get("is_trending", False)
-                    result["ai_verdict"] = ai.get("verdict", "correct")
-                    result["ai_reason"] = ai.get("reason", "")
-                    result["is_hype"] = is_hype(title, desc) or ai.get("is_trending", False)
-                    result["score"] = min(100, int(base * 0.4 + ai.get("ai_score", 50) * 0.6))
-                else:
-                    result["ai_score"] = 50
-                    result["is_trending"] = False
-                    result["ai_verdict"] = "correct"
-                    result["ai_reason"] = ""
-                    result["is_hype"] = is_hype(title, desc)
-                    result["score"] = base
-
-                results.append(result)
+                    "is_trending": ai.get("is_trending", False),
+                    "is_hype": is_hype(title, desc) or ai.get("is_trending", False),
+                    "ai_verdict": ai.get("verdict", "correct"),
+                    "ai_reason": ai.get("reason", ""),
+                    "market_value": ai.get("market_value"),
+                })
 
             time.sleep(random.uniform(1.0, 2.0))
 
+        # Dédoublonnage
         seen = set()
         unique = []
         for item in results:
@@ -377,8 +308,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 seen.add(item["url"])
                 unique.append(item)
 
-        unique.sort(key=lambda x: x["score"], reverse=True)
-        logger.info(f"[Vinted] {len(unique)} résultats pour '{brand}'")
+        logger.info(f"[Vinted] {len(unique)} articles validés par IA pour '{brand}'")
         return unique
 
     except Exception as e:
@@ -394,5 +324,4 @@ def search_all_sources(brand: str):
     all_results = []
     all_results.extend(search_ebay(brand))
     all_results.extend(search_vinted(brand))
-    all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return all_results
