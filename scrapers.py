@@ -66,22 +66,32 @@ def is_hype(title: str, description: str = "") -> bool:
 # ──────────────────────────────────────────
 
 def is_relevant(title: str, brand: str) -> bool:
+    """
+    Filtre minimal — laisse Claude décider du reste.
+    On bloque uniquement les mots clairement hors-sujet.
+    """
     if not title or not brand:
         return False
+
     title_lower = title.lower()
+
+    # La marque doit être dans le titre
     if brand.lower() not in title_lower:
         return False
-    for kw in EXCLUDED_KEYWORDS:
-        if kw.lower() in title_lower:
+
+    # Bloque uniquement les catégories clairement hors-sujet
+    hard_excludes = [
+        "parfum", "perfume", "cologne", "eau de",
+        "iphone", "samsung", "ordinateur", "laptop",
+        "voiture", "moto", "vélo", "jouet", "toy",
+        "livre", "book", "dvd",
+    ]
+    for kw in hard_excludes:
+        if kw in title_lower:
             return False
-    for kw in ALLOWED_KEYWORDS:
-        if kw.lower() in title_lower:
-            return True
-    return False
 
-
-# ──────────────────────────────────────────
-# EBAY
+    # Tout le reste passe — Claude décide
+    return True
 # ──────────────────────────────────────────
 
 def get_ebay_token():
