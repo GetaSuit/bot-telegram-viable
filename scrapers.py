@@ -295,7 +295,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
 
                 base = compute_base_score(result, brand)
 
-                if base > 60:
+                if base > 80:
                     ai = analyze_article(
                         title=title,
                         brand=brand,
