@@ -1,5 +1,5 @@
 """
-ai_scorer.py — Analyse IA des articles via Claude API
+ai_scorer.py — Claude décide seul si l'article vaut le coup
 """
 
 import os
@@ -12,44 +12,48 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
-# Log au démarrage pour vérifier que la clé est bien chargée
 if ANTHROPIC_API_KEY:
     logger.info(f"[AI] Clé API chargée ({len(ANTHROPIC_API_KEY)} caractères)")
 else:
-    logger.error("[AI] ⚠️ ANTHROPIC_API_KEY non définie — analyse IA désactivée")
+    logger.error("[AI] ANTHROPIC_API_KEY manquante")
 
 
 def analyze_article(title: str, brand: str, price: float, source: str) -> dict:
+    """
+    Claude analyse l'article et décide s'il vaut la peine d'être envoyé.
+    Il se base sur sa connaissance des cotes, archives, tendances et marché.
+    Retourne : keep (bool), verdict, reason, is_trending.
+    """
     if not ANTHROPIC_API_KEY:
-        logger.warning("[AI] Clé API manquante")
         return _default_response()
 
-    prompt = f"""Tu es un expert en mode luxe et sourcing de seconde main.
-Analyse cet article :
+    prompt = f"""Tu es un expert en mode luxe, en sourcing de seconde main et en revente.
 
-Marque : {brand}
-Titre : {title}
-Prix : {price}€
-Source : {source}
+Un article vient d'être trouvé sur {source} :
+- Marque : {brand}
+- Titre : {title}
+- Prix demandé : {price}€
 
-Réponds UNIQUEMENT en JSON valide, sans texte autour :
+Ta mission : décider si cet article vaut la peine d'être acheté pour être revendu avec profit.
+
+Pour cela, base-toi sur :
+1. Ta connaissance de la cote réelle de cette pièce sur le marché (Vestiaire Collective, The RealReal, eBay, Vinted)
+2. Les archives de défilés et collections de la marque
+3. Les tendances actuelles (quiet luxury, tailoring, pièces iconiques)
+4. La rareté et la demande de ce type de pièce
+5. Si le prix demandé permet une marge intéressante à la revente
+
+Réponds UNIQUEMENT en JSON valide sans texte autour :
 {{
-  "ai_score": <entier 0-100>,
-  "is_trending": <true ou false>,
-  "is_authentic": <true ou false>,
-  "verdict": <"excellent" ou "bon" ou "correct" ou "faible" ou "suspect">,
-  "reason": <une phrase courte>
+  "keep": <true si l'article vaut le coup, false sinon>,
+  "is_trending": <true si la pièce est tendance en ce moment>,
+  "is_authentic": <true si le titre semble légitime>,
+  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
+  "reason": <une phrase expliquant pourquoi garder ou ignorer cet article>,
+  "market_value": <estimation de la valeur marché actuelle en euros, ou null si inconnu>
 }}
 
-Critères ai_score élevé :
-- Pièce iconique ou très recherchée
-- Prix permettant revente ×2 minimum
-- Catégorie : veste, manteau, sac
-- Titre crédible et précis
-
-Critères is_trending :
-- Marque portée par des célébrités en 2025/2026
-- Style quiet luxury, tailoring, pièces de défilé récent"""
+Sois strict : ne garde que les vrais opportunités. Si tu n'as pas assez d'infos, mets keep à false."""
 
     try:
         response = requests.post(
@@ -68,13 +72,16 @@ Critères is_trending :
         )
 
         if response.status_code != 200:
-            logger.error(f"[AI] Erreur HTTP {response.status_code}: {response.text[:200]}")
+            logger.error(f"[AI] HTTP {response.status_code}: {response.text[:200]}")
             return _default_response()
 
         content = response.json()["content"][0]["text"].strip()
         content = content.replace("```json", "").replace("```", "").strip()
         result = json.loads(content)
-        logger.info(f"[AI] ✅ {brand} — {result.get('verdict')} (score {result.get('ai_score')})")
+        logger.info(
+            f"[AI] {brand} — keep={result.get('keep')} | "
+            f"{result.get('verdict')} | {result.get('reason', '')[:60]}"
+        )
         return result
 
     except json.JSONDecodeError as e:
@@ -87,9 +94,10 @@ Critères is_trending :
 
 def _default_response() -> dict:
     return {
-        "ai_score": 50,
+        "keep": True,  # si IA indispo, on laisse passer
         "is_trending": False,
         "is_authentic": True,
         "verdict": "correct",
-        "reason": "Analyse IA indisponible",
+        "reason": "",
+        "market_value": None,
     }
