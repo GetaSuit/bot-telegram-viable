@@ -1,7 +1,3 @@
-"""
-ai_scorer.py — Claude décide seul si l'article vaut le coup
-"""
-
 import os
 import json
 import logging
@@ -19,41 +15,37 @@ else:
 
 
 def analyze_article(title: str, brand: str, price: float, source: str) -> dict:
-    """
-    Claude analyse l'article et décide s'il vaut la peine d'être envoyé.
-    Il se base sur sa connaissance des cotes, archives, tendances et marché.
-    Retourne : keep (bool), verdict, reason, is_trending.
-    """
     if not ANTHROPIC_API_KEY:
         return _default_response()
 
-    prompt = f"""Tu es un expert en mode luxe, en sourcing de seconde main et en revente.
+    prompt = f"""Tu es un expert en mode luxe et sourcing de seconde main.
 
-Un article vient d'être trouvé sur {source} :
+Article trouvé sur {source} :
 - Marque : {brand}
 - Titre : {title}
-- Prix demandé : {price}€
+- Prix : {price}€
 
-Ta mission : décider si cet article vaut la peine d'être acheté pour être revendu avec profit.
+Décide si cet article vaut la peine d'être acheté pour revente.
 
-Pour cela, base-toi sur :
-1. Ta connaissance de la cote réelle de cette pièce sur le marché (Vestiaire Collective, The RealReal, eBay, Vinted)
-2. Les archives de défilés et collections de la marque
-3. Les tendances actuelles (quiet luxury, tailoring, pièces iconiques)
-4. La rareté et la demande de ce type de pièce
-5. Si le prix demandé permet une marge intéressante à la revente
+Sois GÉNÉREUX dans ta sélection — garde tout ce qui pourrait intéresser un revendeur de luxe :
+- Vestes, blazers, costumes, manteaux, sacs, pochettes
+- Pièces de marque authentiques à bon prix
+- Articles avec potentiel de revente ×1.5 minimum
 
-Réponds UNIQUEMENT en JSON valide sans texte autour :
+Rejette UNIQUEMENT :
+- Les contrefaçons évidentes
+- Les articles clairement hors-sujet (parfums, chaussures, accessoires, tech)
+- Les articles dont le prix est trop élevé pour dégager une marge
+
+Réponds UNIQUEMENT en JSON valide :
 {{
-  "keep": <true si l'article vaut le coup, false sinon>,
-  "is_trending": <true si la pièce est tendance en ce moment>,
-  "is_authentic": <true si le titre semble légitime>,
+  "keep": <true ou false>,
+  "is_trending": <true ou false>,
+  "is_authentic": <true ou false>,
   "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
-  "reason": <une phrase expliquant pourquoi garder ou ignorer cet article>,
-  "market_value": <estimation de la valeur marché actuelle en euros, ou null si inconnu>
-}}
-
-Sois strict : ne garde que les vrais opportunités. Si tu n'as pas assez d'infos, mets keep à false."""
+  "reason": <une phrase courte>,
+  "market_value": <valeur marché estimée en euros ou null>
+}}"""
 
     try:
         response = requests.post(
@@ -94,7 +86,7 @@ Sois strict : ne garde que les vrais opportunités. Si tu n'as pas assez d'infos
 
 def _default_response() -> dict:
     return {
-        "keep": True,  # si IA indispo, on laisse passer
+        "keep": True,
         "is_trending": False,
         "is_authentic": True,
         "verdict": "correct",
