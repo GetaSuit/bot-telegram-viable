@@ -2,18 +2,16 @@ import requests
 import time
 import random
 import logging
-from datetime import datetime, timezone
 from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
     EBAY_APP_ID, EBAY_CERT_ID,
-    EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
     HYPE_KEYWORDS,
 )
 from ai_scorer import analyze_article
 
 logger = logging.getLogger(__name__)
 
-MAX_AGE_DAYS = 30
+MAX_ARTICLES_PER_SOURCE = 10
 
 
 # ──────────────────────────────────────────
@@ -38,22 +36,7 @@ def price_ok(price_raw) -> bool:
 
 
 # ──────────────────────────────────────────
-# DATE
-# ──────────────────────────────────────────
-
-def is_recent(timestamp: int) -> bool:
-    if not timestamp:
-        return True
-    try:
-        item_date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        days_old = (datetime.now(tz=timezone.utc) - item_date).days
-        return days_old <= MAX_AGE_DAYS
-    except Exception:
-        return True
-
-
-# ──────────────────────────────────────────
-# DÉTECTEUR COUP DU JOUR
+# HYPE
 # ──────────────────────────────────────────
 
 def is_hype(title: str, description: str = "") -> bool:
@@ -66,7 +49,6 @@ def is_hype(title: str, description: str = "") -> bool:
 # ──────────────────────────────────────────
 
 def is_relevant(title: str, brand: str) -> bool:
-    """Filtre minimal — Claude décide du reste."""
     if not title or not brand:
         return False
     title_lower = title.lower()
@@ -104,82 +86,92 @@ def get_ebay_token():
     )
     return r.json().get("access_token")
 
-def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
+def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
+                max_articles=MAX_ARTICLES_PER_SOURCE):
     results = []
+    candidates = []
     try:
         token = get_ebay_token()
         if not token:
             logger.error("[eBay] Token introuvable")
             return []
 
-        # Recherche directe par marque sans catégorie forcée
-        params = {
-            "q": brand,
-            "filter": (
-                f"price:[{min_price}..{max_price}],"
-                f"currency:EUR,"
-                f"itemLocationCountry:FR"
-            ),
-            "sort": "newlyListed",
-            "limit": 50,
-        }
-        r = requests.get(
-            "https://api.ebay.com/buy/browse/v1/item_summary/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=15,
-        )
-        r.raise_for_status()
+        offset = 0
+        limit = 50
 
-        for item in r.json().get("itemSummaries", []):
+        while offset < 200 and len(candidates) < max_articles * 3:
+            params = {
+                "q": brand,
+                "filter": (
+                    f"price:[{min_price}..{max_price}],"
+                    f"currency:EUR"
+                ),
+                "sort": "price",
+                "limit": limit,
+                "offset": offset,
+            }
+            r = requests.get(
+                "https://api.ebay.com/buy/browse/v1/item_summary/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            items = data.get("itemSummaries", [])
+
+            if not items:
+                break
+
+            for item in items:
+                title = item.get("title", "")
+                price_raw = item.get("price", {})
+                if not price_ok(price_raw):
+                    continue
+                if not is_relevant(title, brand):
+                    continue
+                candidates.append(item)
+
+            offset += limit
+            if offset >= data.get("total", 0):
+                break
+            time.sleep(0.3)
+
+        logger.info(f"[eBay] {len(candidates)} candidats → Claude analyse {min(len(candidates), max_articles)}")
+
+        for item in candidates[:max_articles]:
             title = item.get("title", "")
-            price_raw = item.get("price", {})
+            parsed_price = parse_price(item.get("price", {}))
+            image_url = item.get("image", {}).get("imageUrl")
+            use_vision = is_hype(title)
 
-            if not price_ok(price_raw):
-                continue
-            if not is_relevant(title, brand):
-                continue
-
-            # Filtre date
-            item_date_str = item.get("itemCreationDate", "")
-            if item_date_str:
-                try:
-                    item_date = datetime.fromisoformat(
-                        item_date_str.replace("Z", "+00:00")
-                    )
-                    if (datetime.now(tz=timezone.utc) - item_date).days > MAX_AGE_DAYS:
-                        continue
-                except Exception:
-                    pass
-
-            parsed_price = parse_price(price_raw)
-
-            # Claude analyse
             ai = analyze_article(
                 title=title,
                 brand=brand,
                 price=parsed_price or 0,
                 source="eBay",
+                image_url=image_url if use_vision else None,
             )
 
             if not ai.get("keep", True):
-                logger.info(f"[eBay] Ignoré: {title[:50]} — {ai.get('reason', '')}")
+                logger.info(f"[eBay] Ignoré: {title[:50]}")
                 continue
 
             results.append({
                 "title": title,
                 "price": parsed_price,
                 "url": item.get("itemWebUrl"),
-                "image": item.get("image", {}).get("imageUrl"),
+                "image": image_url,
                 "source": "eBay",
                 "is_trending": ai.get("is_trending", False),
                 "is_hype": is_hype(title) or ai.get("is_trending", False),
+                "is_runway": ai.get("is_runway", False),
+                "collection": ai.get("collection"),
                 "ai_verdict": ai.get("verdict", "correct"),
                 "ai_reason": ai.get("reason", ""),
                 "market_value": ai.get("market_value"),
             })
 
-        # Dédoublonnage
         seen = set()
         unique = []
         for item in results:
@@ -228,73 +220,86 @@ def _vinted_init_session():
         logger.error(f"[Vinted] Init session: {e}")
         return False
 
-def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
+def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
+                  max_articles=MAX_ARTICLES_PER_SOURCE):
     results = []
+    candidates = []
     try:
         _vinted_init_session()
 
-        # Recherche directe par marque sans catégorie forcée
-        params = {
-            "search_text": brand,
-            "price_from": min_price,
-            "price_to": max_price,
-            "currency": "EUR",
-            "per_page": 50,
-            "order": "newest_first",
-        }
-        r = VINTED_SESSION.get(
-            "https://www.vinted.fr/api/v2/catalog/items",
-            params=params,
-            timeout=15,
-        )
-        r.raise_for_status()
+        for page in range(1, 5):
+            params = {
+                "search_text": brand,
+                "price_from": min_price,
+                "price_to": max_price,
+                "currency": "EUR",
+                "per_page": 50,
+                "page": page,
+                "order": "relevance",
+            }
+            r = VINTED_SESSION.get(
+                "https://www.vinted.fr/api/v2/catalog/items",
+                params=params,
+                timeout=15,
+            )
+            r.raise_for_status()
+            items = r.json().get("items", [])
 
-        for item in r.json().get("items", []):
+            if not items:
+                break
+
+            for item in items:
+                title = item.get("title", "")
+                price_raw = item.get("price")
+                if not price_ok(price_raw):
+                    continue
+                if not is_relevant(title, brand):
+                    continue
+                candidates.append(item)
+
+            if len(candidates) >= max_articles * 3:
+                break
+
+            time.sleep(random.uniform(1.0, 1.5))
+
+        logger.info(f"[Vinted] {len(candidates)} candidats → Claude analyse {min(len(candidates), max_articles)}")
+
+        for item in candidates[:max_articles]:
             title = item.get("title", "")
             price_raw = item.get("price")
             desc = item.get("description", "") or ""
-
-            if not price_ok(price_raw):
-                continue
-            if not is_relevant(title, brand):
-                continue
-
-            # Filtre date
-            timestamp = item.get("updated_at_ts") or item.get("created_at_ts", 0)
-            if timestamp and not is_recent(timestamp):
-                continue
-
             parsed_price = parse_price(price_raw)
+            photo = item.get("photo") or {}
+            image_url = photo.get("url")
+            use_vision = is_hype(title, desc)
 
-            # Claude analyse
             ai = analyze_article(
                 title=title,
                 brand=brand,
                 price=parsed_price or 0,
                 source="Vinted",
+                image_url=image_url if use_vision else None,
             )
 
             if not ai.get("keep", True):
-                logger.info(f"[Vinted] Ignoré: {title[:50]} — {ai.get('reason', '')}")
+                logger.info(f"[Vinted] Ignoré: {title[:50]}")
                 continue
 
-            photo = item.get("photo") or {}
             results.append({
                 "title": title,
                 "price": parsed_price,
                 "url": f"https://www.vinted.fr/items/{item.get('id')}",
-                "image": photo.get("url"),
+                "image": image_url,
                 "source": "Vinted",
                 "is_trending": ai.get("is_trending", False),
                 "is_hype": is_hype(title, desc) or ai.get("is_trending", False),
+                "is_runway": ai.get("is_runway", False),
+                "collection": ai.get("collection"),
                 "ai_verdict": ai.get("verdict", "correct"),
                 "ai_reason": ai.get("reason", ""),
                 "market_value": ai.get("market_value"),
             })
 
-        time.sleep(random.uniform(1.0, 2.0))
-
-        # Dédoublonnage
         seen = set()
         unique = []
         for item in results:
@@ -314,8 +319,8 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
 # UNIFIÉ
 # ──────────────────────────────────────────
 
-def search_all_sources(brand: str):
+def search_all_sources(brand: str, max_articles=MAX_ARTICLES_PER_SOURCE):
     all_results = []
-    all_results.extend(search_ebay(brand))
-    all_results.extend(search_vinted(brand))
+    all_results.extend(search_ebay(brand, max_articles=max_articles))
+    all_results.extend(search_vinted(brand, max_articles=max_articles))
     return all_results
