@@ -12,41 +12,44 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+# Log au démarrage pour vérifier que la clé est bien chargée
+if ANTHROPIC_API_KEY:
+    logger.info(f"[AI] Clé API chargée ({len(ANTHROPIC_API_KEY)} caractères)")
+else:
+    logger.error("[AI] ⚠️ ANTHROPIC_API_KEY non définie — analyse IA désactivée")
+
 
 def analyze_article(title: str, brand: str, price: float, source: str) -> dict:
     if not ANTHROPIC_API_KEY:
+        logger.warning("[AI] Clé API manquante")
         return _default_response()
 
-    prompt = f"""Tu es un expert en mode luxe et en sourcing de pièces de seconde main.
-Analyse cet article mis en vente :
+    prompt = f"""Tu es un expert en mode luxe et sourcing de seconde main.
+Analyse cet article :
 
 Marque : {brand}
 Titre : {title}
 Prix : {price}€
 Source : {source}
 
-Réponds UNIQUEMENT en JSON avec exactement ces champs :
+Réponds UNIQUEMENT en JSON valide, sans texte autour :
 {{
-  "ai_score": <entier 0-100, pertinence et potentiel de revente>,
-  "is_trending": <true/false, est-ce que cette pièce est tendance en 2025/2026>,
-  "is_authentic": <true/false, le titre semble-t-il authentique ou suspect>,
-  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
-  "reason": <une phrase courte expliquant ton verdict>
+  "ai_score": <entier 0-100>,
+  "is_trending": <true ou false>,
+  "is_authentic": <true ou false>,
+  "verdict": <"excellent" ou "bon" ou "correct" ou "faible" ou "suspect">,
+  "reason": <une phrase courte>
 }}
 
-Critères pour ai_score élevé :
-- Pièce iconique ou très demandée de la marque
-- Prix d'achat permettant une belle marge (revente ×2 minimum)
-- Catégorie tendance (veste, manteau, sac)
-- Titre clair et crédible
-- Marque au goût du jour ou intemporelle
+Critères ai_score élevé :
+- Pièce iconique ou très recherchée
+- Prix permettant revente ×2 minimum
+- Catégorie : veste, manteau, sac
+- Titre crédible et précis
 
-Critères pour is_trending :
-- Marque portée par des célébrités récemment
-- Pièce vue dans les défilés 2024/2025
-- Style correspondant aux tendances actuelles (quiet luxury, tailoring)
-
-Réponds uniquement avec le JSON, sans texte autour."""
+Critères is_trending :
+- Marque portée par des célébrités en 2025/2026
+- Style quiet luxury, tailoring, pièces de défilé récent"""
 
     try:
         response = requests.post(
@@ -61,17 +64,24 @@ Réponds uniquement avec le JSON, sans texte autour."""
                 "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=15,
+            timeout=20,
         )
-        response.raise_for_status()
+
+        if response.status_code != 200:
+            logger.error(f"[AI] Erreur HTTP {response.status_code}: {response.text[:200]}")
+            return _default_response()
+
         content = response.json()["content"][0]["text"].strip()
         content = content.replace("```json", "").replace("```", "").strip()
         result = json.loads(content)
-        logger.info(f"[AI] {brand} — {result.get('verdict')} (score {result.get('ai_score')})")
+        logger.info(f"[AI] ✅ {brand} — {result.get('verdict')} (score {result.get('ai_score')})")
         return result
 
+    except json.JSONDecodeError as e:
+        logger.error(f"[AI] JSON invalide: {e}")
+        return _default_response()
     except Exception as e:
-        logger.warning(f"[AI] Erreur analyse '{title}': {e}")
+        logger.error(f"[AI] Erreur: {e}")
         return _default_response()
 
 
