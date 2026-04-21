@@ -10,12 +10,7 @@ import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    BotCommand,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -40,9 +35,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_scan_cursor = {"index": 0}
+BATCH_SIZE = 2
+MAX_PER_BRAND = 5
+
 
 # ──────────────────────────────────────────
-# SERVEUR HTTP — KEEP ALIVE RENDER
+# SERVEUR HTTP
 # ──────────────────────────────────────────
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -70,11 +69,15 @@ def format_article(item: dict, brand: str) -> str:
     source = item.get("source", "?")
     url = item.get("url", "")
     is_hype = item.get("is_hype", False)
+    is_runway = item.get("is_runway", False)
+    collection = item.get("collection")
     ai_verdict = item.get("ai_verdict", "")
     ai_reason = item.get("ai_reason", "")
     market_value = item.get("market_value")
 
     header = "🔥 *COUP DU JOUR* — Tendance du moment !\n\n" if is_hype else ""
+    runway_line = "🎭 *Pièce de défilé détectée*\n" if is_runway else ""
+    collection_line = f"👗 *Collection* : {collection}\n" if collection else ""
 
     verdict_icons = {
         "excellent": "🏆",
@@ -93,7 +96,7 @@ def format_article(item: dict, brand: str) -> str:
             px = float(str(price))
             profit = mv - px
             market_line = (
-                f"💹 *Valeur marché estimée* : ~{mv:.0f}€\n"
+                f"💹 *Valeur marché* : ~{mv:.0f}€\n"
                 f"📊 *Profit potentiel* : +{profit:.0f}€\n"
             )
         except Exception:
@@ -101,6 +104,8 @@ def format_article(item: dict, brand: str) -> str:
 
     return (
         f"{header}"
+        f"{runway_line}"
+        f"{collection_line}"
         f"{verdict_line}"
         f"🏷️ *{title}*\n\n"
         f"💰 *Prix demandé* : {price}€\n"
@@ -128,14 +133,13 @@ async def send_article(bot, item: dict, brand: str):
     keyboard = build_keyboard(item)
     image = item.get("image")
 
-    if item.get("is_hype"):
+    if item.get("is_hype") or item.get("is_runway"):
         try:
+            emoji = "🎭" if item.get("is_runway") else "🔥🔥"
+            label = "PIÈCE DE DÉFILÉ" if item.get("is_runway") else "COUP DU JOUR"
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=(
-                    f"🔥🔥 *COUP DU JOUR* 🔥🔥\n"
-                    f"*{brand}* — Article tendance repéré !"
-                ),
+                text=f"{emoji} *{label}* {emoji}\n*{brand}* — Article exceptionnel repéré !",
                 parse_mode="Markdown",
             )
         except Exception:
@@ -174,10 +178,6 @@ async def send_article(bot, item: dict, brand: str):
 # SCAN PAR BATCH
 # ──────────────────────────────────────────
 
-_scan_cursor = {"index": 0}
-BATCH_SIZE = 3
-MAX_PER_BRAND = 5
-
 async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     start = _scan_cursor["index"]
     batch = BRANDS[start: start + BATCH_SIZE]
@@ -214,18 +214,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🤖 Ton assistant IA de sourcing luxe\n"
         "Chaque article est analysé par Claude :\n"
-        "cote réelle · tendances · profit potentiel\n\n"
+        "cote réelle · collections · archives · profit\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "📦 *Sources* : eBay · Vinted\n"
+        f"📦 *Sources* : eBay · Vinted\n"
         f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ *Marques* : {len(BRANDS)} maisons surveillées\n"
+        f"🔁 *Scan auto* : toutes les {SCAN_INTERVAL_MINUTES // 60}h\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Utilise le menu / pour accéder aux commandes"
     )
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔍 Lancer un scan", callback_data="do_scan"),
-            InlineKeyboardButton("🏷️ Voir les marques", callback_data="do_marques"),
+            InlineKeyboardButton("🔄 Lancer un scan", callback_data="do_scan"),
+            InlineKeyboardButton("🏷️ Les marques", callback_data="do_marques"),
         ],
         [
             InlineKeyboardButton("📊 Statut", callback_data="do_status"),
@@ -241,18 +242,18 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔄 /scan — Lance un scan immédiat\n"
         "🔎 /chercher — Recherche par marque\n"
         "   _Ex : /chercher Hermès_\n\n"
-        "🏷️ /marques — Liste des maisons surveillées\n"
-        "📊 /status — État du bot en temps réel\n"
-        "🔬 /test\\_sources — Diagnostic eBay & Vinted\n\n"
+        "🏷️ /marques — Maisons surveillées\n"
+        "📊 /status — État du bot\n"
+        "🔬 /test\\_sources — Diagnostic\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🤖 *Comment fonctionne l'IA ?*\n\n"
-        "Chaque article trouvé est analysé par Claude :\n"
-        "• Cote réelle sur Vestiaire, RealReal, eBay\n"
-        "• Archives de collections & défilés\n"
-        "• Tendances actuelles (quiet luxury, tailoring)\n"
-        "• Valeur marché estimée & profit potentiel\n\n"
-        "🔥 *COUP DU JOUR* = pièce tendance repérée\n"
-        "chez une star, en défilé ou en magazine"
+        "🤖 *Analyse IA par article :*\n\n"
+        "• Cote réelle (Vestiaire, RealReal, eBay)\n"
+        "• Archives de toutes les collections\n"
+        "• Détection pièces de défilé\n"
+        "• Tendances actuelles\n"
+        "• Valeur marché & profit estimé\n\n"
+        "🎭 *PIÈCE DE DÉFILÉ* = collection identifiée\n"
+        "🔥 *COUP DU JOUR* = tendance du moment"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -265,21 +266,20 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🟢 *Bot actif*\n"
         f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n\n"
-        f"🔁 *Scan auto* : toutes les {SCAN_INTERVAL_MINUTES} min\n"
+        f"🔁 *Scan auto* : toutes les {SCAN_INTERVAL_MINUTES // 60}h\n"
         f"📦 *Progression* : [{bar}] {pct}%\n"
-        f"   Marque {progress}/{len(BRANDS)} en cours\n\n"
+        f"   Marque {progress}/{len(BRANDS)}\n\n"
         f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ *Marques* : {len(BRANDS)} surveillées\n"
         f"🤖 *IA* : Claude Sonnet — actif\n"
+        f"👁️ *Vision* : activée sur articles hype\n"
         f"📡 *Sources* : eBay · Vinted"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sorted_brands = sorted(BRANDS)
-    # Affichage en 2 colonnes
     lines = ["🏷️ *Maisons surveillées*\n━━━━━━━━━━━━━━━━━━━━━\n"]
-    for b in sorted_brands:
+    for b in sorted(BRANDS):
         lines.append(f"  · {b}")
     lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"*{len(BRANDS)} maisons au total*")
@@ -289,8 +289,8 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔄 *Scan lancé*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🤖 L'IA analyse chaque article...\n"
-        "_Les résultats arrivent dans quelques instants_",
+        "🤖 Claude analyse chaque article...\n"
+        "_Résultats dans quelques instants_",
         parse_mode="Markdown"
     )
     context.application.job_queue.run_once(scan_job, when=0, name="scan_manuel")
@@ -304,20 +304,18 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "*Utilisation :*\n"
             "`/chercher Hermès`\n"
             "`/chercher Tom Ford`\n\n"
-            "Tape /marques pour voir la liste complète",
+            "Tape /marques pour la liste complète",
             parse_mode="Markdown"
         )
         return
 
     brand = " ".join(context.args)
-    brand_match = next(
-        (b for b in BRANDS if b.lower() == brand.lower()), None
-    )
+    brand_match = next((b for b in BRANDS if b.lower() == brand.lower()), None)
 
     if not brand_match:
         await update.message.reply_text(
             f"❌ *Marque non reconnue* : `{brand}`\n\n"
-            f"Tape /marques pour voir la liste complète.",
+            f"Tape /marques pour la liste complète.",
             parse_mode="Markdown"
         )
         return
@@ -327,7 +325,8 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🏷️ Marque : *{brand_match}*\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🤖 Analyse IA de chaque article...\n\n"
+        f"🤖 Claude analyse chaque article...\n"
+        f"👁️ Vision activée sur articles hype\n\n"
         f"_Résultats dans quelques instants_",
         parse_mode="Markdown"
     )
@@ -339,13 +338,13 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"⚠️ *Aucun résultat*\n\n"
             f"L'IA n'a retenu aucun article pour *{brand_match}*.\n"
-            f"Réessaie plus tard ou scanne une autre marque.",
+            f"Réessaie plus tard.",
             parse_mode="Markdown"
         )
         return
 
     await update.message.reply_text(
-        f"✅ *{len(new_items)} article(s) sélectionné(s)* par l'IA pour *{brand_match}*",
+        f"✅ *{len(new_items)} article(s)* sélectionné(s) pour *{brand_match}*",
         parse_mode="Markdown"
     )
 
@@ -358,16 +357,14 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔬 *Diagnostic des sources*\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "_Test en cours..._",
+        "🔬 *Diagnostic en cours...*",
         parse_mode="Markdown"
     )
     brand = "Hermès"
     lines = [
         f"🔬 *Diagnostic — {brand}*",
         f"━━━━━━━━━━━━━━━━━━━━━",
-        f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n",
+        f"💶 {MIN_PRICE}€ – {MAX_PRICE}€\n",
     ]
     for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
         try:
@@ -378,19 +375,19 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ *{name}* : {len(res)} article(s) validé(s)\n"
                     f"   📌 {str(sample.get('title',''))[:45]}…\n"
                     f"   💰 {sample.get('price')}€\n"
-                    f"   🤖 _{sample.get('ai_reason', 'Analyse IA')[:60]}_"
+                    f"   🤖 _{sample.get('ai_reason', '')[:60]}_"
                 )
             else:
-                lines.append(f"⚠️ *{name}* : aucun article retenu par l'IA")
+                lines.append(f"⚠️ *{name}* : aucun article retenu")
         except Exception as e:
-            lines.append(f"❌ *{name}* : erreur\n   `{str(e)[:60]}`")
+            lines.append(f"❌ *{name}* : `{str(e)[:60]}`")
     lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ──────────────────────────────────────────
-# CALLBACKS BOUTONS INLINE
+# CALLBACKS
 # ──────────────────────────────────────────
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,9 +413,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.application.job_queue.run_once(scan_job, when=0, name="scan_btn")
     elif query.data == "do_marques":
-        sorted_brands = sorted(BRANDS)
         lines = ["🏷️ *Maisons surveillées*\n━━━━━━━━━━━━━━━━━━━━━\n"]
-        for b in sorted_brands:
+        for b in sorted(BRANDS):
             lines.append(f"  · {b}")
         lines.append(f"\n*{len(BRANDS)} maisons au total*")
         await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -430,13 +426,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 *Statut*\n━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🟢 Bot actif\n"
             f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n"
-            f"📦 Progression : [{bar}] {pct}%\n"
-            f"🤖 IA Claude : active",
+            f"📦 [{bar}] {pct}%\n"
+            f"🤖 Claude : actif | 👁️ Vision : hype only",
             parse_mode="Markdown"
         )
     elif query.data == "do_help":
         await query.message.reply_text(
-            "❓ *Commandes disponibles*\n"
+            "❓ *Commandes*\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🔄 /scan — Scan immédiat\n"
             "🔎 /chercher — Recherche par marque\n"
@@ -461,7 +457,6 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -471,7 +466,6 @@ def main():
     app.add_handler(CommandHandler("test_sources", cmd_test_sources))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # Scan automatique
     app.job_queue.run_repeating(
         scan_job,
         interval=SCAN_INTERVAL_MINUTES * 60,
@@ -481,7 +475,7 @@ def main():
 
     logger.info(
         f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"IA Claude | {SCAN_INTERVAL_MINUTES}min"
+        f"scan {SCAN_INTERVAL_MINUTES // 60}h | IA + vision hype"
     )
 
     while True:
