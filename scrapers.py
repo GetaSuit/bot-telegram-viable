@@ -1,4 +1,3 @@
-from ai_scorer import analyze_article
 import requests
 import time
 import random
@@ -10,6 +9,7 @@ from config import (
     EXCLUDED_KEYWORDS, ALLOWED_KEYWORDS,
     HYPE_KEYWORDS,
 )
+from ai_scorer import analyze_article
 
 logger = logging.getLogger(__name__)
 
@@ -40,39 +40,27 @@ def price_ok(price_raw) -> bool:
 # ──────────────────────────────────────────
 
 def is_hype(title: str, description: str = "") -> bool:
-    """
-    Retourne True si l'article est au goût du jour :
-    vu sur une star, en magazine, défilé, collab, édition limitée...
-    """
     text = (title + " " + description).lower()
     return any(kw.lower() in text for kw in HYPE_KEYWORDS)
 
 
 # ──────────────────────────────────────────
-# SCORE DE PERTINENCE (0–100)
+# SCORE TECHNIQUE (0–100)
 # ──────────────────────────────────────────
 
-def compute_score(item: dict, brand: str) -> int:
+def compute_base_score(item: dict, brand: str) -> int:
     score = 0
     title = (item.get("title") or "").lower()
-    desc = (item.get("description") or "").lower()
     price = parse_price(item.get("price"))
 
-    # Marque dans le titre (+25)
     if brand.lower() in title:
         score += 25
-
-    # Catégorie ciblée (+20)
     for kw in ALLOWED_KEYWORDS:
         if kw.lower() in title:
             score += 20
             break
-
-    # Coup du jour détecté (+30 — bonus majeur)
-    if is_hype(title, desc):
-        score += 30
-
-    # Prix dans la fourchette basse = meilleure marge (+15)
+    if is_hype(title):
+        score += 15
     if price is not None:
         if MIN_PRICE <= price <= 150:
             score += 15
@@ -80,18 +68,12 @@ def compute_score(item: dict, brand: str) -> int:
             score += 10
         elif 250 < price <= MAX_PRICE:
             score += 5
-
-    # Source (+10 eBay, +5 Vinted)
     if item.get("source") == "eBay":
         score += 10
     elif item.get("source") == "Vinted":
         score += 5
-
-    # Photo disponible (+5)
     if item.get("image"):
         score += 5
-
-    # Titre trop court (-10)
     if len(title) < 20:
         score -= 10
 
@@ -182,13 +164,39 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     "source": "eBay",
                     "description": "",
                 }
-                result["is_hype"] = is_hype(title)
-                result["score"] = compute_score(result, brand)
+
+                # Score technique d'abord
+                base = compute_base_score(result, brand)
+
+                # IA uniquement si score technique > 60
+                if base > 60:
+                    ai = analyze_article(
+                        title=title,
+                        brand=brand,
+                        price=parsed_price or 0,
+                        source="eBay",
+                    )
+                    if not ai.get("is_authentic", True):
+                        logger.info(f"[eBay] Suspect ignoré: {title}")
+                        continue
+                    result["ai_score"] = ai.get("ai_score", 50)
+                    result["is_trending"] = ai.get("is_trending", False)
+                    result["ai_verdict"] = ai.get("verdict", "correct")
+                    result["ai_reason"] = ai.get("reason", "")
+                    result["is_hype"] = is_hype(title) or ai.get("is_trending", False)
+                    result["score"] = min(100, int(base * 0.5 + ai.get("ai_score", 50) * 0.5))
+                else:
+                    result["ai_score"] = 50
+                    result["is_trending"] = False
+                    result["ai_verdict"] = "correct"
+                    result["ai_reason"] = ""
+                    result["is_hype"] = is_hype(title)
+                    result["score"] = base
+
                 results.append(result)
 
             time.sleep(0.5)
 
-        # Dédoublonnage + tri par score
         seen = set()
         unique = []
         for item in results:
@@ -270,13 +278,39 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     "source": "Vinted",
                     "description": desc,
                 }
-                result["is_hype"] = is_hype(title, desc)
-                result["score"] = compute_score(result, brand)
+
+                # Score technique d'abord
+                base = compute_base_score(result, brand)
+
+                # IA uniquement si score technique > 60
+                if base > 60:
+                    ai = analyze_article(
+                        title=title,
+                        brand=brand,
+                        price=parsed_price or 0,
+                        source="Vinted",
+                    )
+                    if not ai.get("is_authentic", True):
+                        logger.info(f"[Vinted] Suspect ignoré: {title}")
+                        continue
+                    result["ai_score"] = ai.get("ai_score", 50)
+                    result["is_trending"] = ai.get("is_trending", False)
+                    result["ai_verdict"] = ai.get("verdict", "correct")
+                    result["ai_reason"] = ai.get("reason", "")
+                    result["is_hype"] = is_hype(title, desc) or ai.get("is_trending", False)
+                    result["score"] = min(100, int(base * 0.5 + ai.get("ai_score", 50) * 0.5))
+                else:
+                    result["ai_score"] = 50
+                    result["is_trending"] = False
+                    result["ai_verdict"] = "correct"
+                    result["ai_reason"] = ""
+                    result["is_hype"] = is_hype(title, desc)
+                    result["score"] = base
+
                 results.append(result)
 
             time.sleep(random.uniform(1.0, 2.0))
 
-        # Dédoublonnage + tri par score
         seen = set()
         unique = []
         for item in results:
