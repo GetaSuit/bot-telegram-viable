@@ -11,7 +11,7 @@ MIN_PRICE = 70
 MAX_PRICE = 400
 SCAN_INTERVAL_MINUTES = 60
 
-# ── Mots-clés déclencheurs d'alerte "coup du jour"
+# ── Mots-clés coup du jour
 HYPE_KEYWORDS = [
     "celebrity", "célébrité", "star", "vu sur", "porté par",
     "worn by", "as seen on", "spotted", "paparazzi",
@@ -62,26 +62,16 @@ ALLOWED_KEYWORDS = [
     "backpack", "sac à dos", "besace",
 ]
 
-# ── Marques par tier
-TIER1_BRANDS = [
+# ── Marques surveillées
+BRANDS = [
     "Hermès", "Chanel", "Louis Vuitton", "Dior", "Brioni",
-    "Kiton", "Loro Piana", "Berluti",
-    "Cesare Attolini", "Stefano Ricci",
-]
-
-TIER2_BRANDS = [
-    "Zegna", "Canali", "Isaia", "Corneliani",
+    "Kiton", "Loro Piana", "Berluti", "Cesare Attolini", "Stefano Ricci",
+    "Zegna", "Canali", "Isaia", "Corneliani", "Caruso",
     "Tom Ford", "Gucci", "Prada", "Balenciaga", "Bottega Veneta",
-    "Ralph Lauren Purple Label", "Saint Laurent",
-    "Caruso", "Dries Van Noten",
-]
-
-TIER3_BRANDS = [
+    "Ralph Lauren Purple Label", "Saint Laurent", "Dries Van Noten",
     "Burberry", "Ralph Lauren", "Givenchy",
     "Valentino", "Versace", "Dolce & Gabbana",
     "Brunello Cucinelli", "Ami Paris",
     "Celine", "Loewe", "Fendi", "Balmain", "Acne Studios",
     "Vivienne Westwood",
 ]
-
-BRANDS = TIER1_BRANDS + TIER2_BRANDS + TIER3_BRANDS
