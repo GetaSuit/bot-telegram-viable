@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import base64
 import requests
 
 logger = logging.getLogger(__name__)
@@ -14,38 +15,77 @@ else:
     logger.error("[AI] ANTHROPIC_API_KEY manquante")
 
 
-def analyze_article(title: str, brand: str, price: float, source: str) -> dict:
+def fetch_image_base64(image_url: str) -> str | None:
+    try:
+        r = requests.get(image_url, timeout=10)
+        r.raise_for_status()
+        return base64.standard_b64encode(r.content).decode("utf-8")
+    except Exception as e:
+        logger.warning(f"[AI] Image non récupérable: {e}")
+        return None
+
+
+def analyze_article(
+    title: str,
+    brand: str,
+    price: float,
+    source: str,
+    image_url: str = None,
+) -> dict:
     if not ANTHROPIC_API_KEY:
         return _default_response()
 
-    prompt = f"""Tu es un expert en mode luxe et sourcing de seconde main.
+    prompt = f"""Tu es un expert mondial en mode luxe, archives de défilés et sourcing de seconde main.
 
 Article trouvé sur {source} :
 - Marque : {brand}
 - Titre : {title}
-- Prix : {price}€
+- Prix demandé : {price}€
 
-Décide si cet article vaut la peine d'être acheté pour revente.
+Ta mission :
 
-Sois GÉNÉREUX dans ta sélection — garde tout ce qui pourrait intéresser un revendeur de luxe :
-- Vestes, blazers, costumes, manteaux, sacs, pochettes
-- Pièces de marque authentiques à bon prix
-- Articles avec potentiel de revente ×1.5 minimum
+1. ANALYSE VISUELLE (si image fournie) :
+   - Cette photo vient-elle d'un défilé, lookbook ou shooting éditorial ?
+   - Reconnais-tu cette pièce dans une collection spécifique ?
+     (remonte TOUTES les collections jamais créées par {brand} : SS, FW, Resort, Pre-Fall, Couture)
+   - Photo de particulier ou photo professionnelle ?
+   - Indices visuels de contrefaçon ?
 
-Rejette UNIQUEMENT :
-- Les contrefaçons évidentes
-- Les articles clairement hors-sujet (parfums, chaussures, accessoires, tech)
-- Les articles dont le prix est trop élevé pour dégager une marge
+2. ANALYSE MARCHÉ :
+   - Cote réelle sur Vestiaire Collective, The RealReal, eBay international
+   - Cette pièce appartient-elle à une collection iconique ou rare ?
+   - Le prix permet-il une revente rentable (×1.5 minimum) ?
+
+Sois GÉNÉREUX : garde tout ce qui a du potentiel.
+Rejette uniquement : contrefaçons évidentes, parfums, tech, hors-sujet total.
 
 Réponds UNIQUEMENT en JSON valide :
 {{
   "keep": <true ou false>,
-  "is_trending": <true ou false>,
-  "is_authentic": <true ou false>,
+  "is_trending": <true si tendance 2024-2026>,
+  "is_authentic": <true si semble authentique>,
+  "is_runway": <true si photo ou pièce de défilé>,
+  "collection": <collection identifiée ex "Dior SS24" ou null>,
   "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
   "reason": <une phrase courte>,
   "market_value": <valeur marché estimée en euros ou null>
 }}"""
+
+    content = []
+
+    if image_url:
+        img_b64 = fetch_image_base64(image_url)
+        if img_b64:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": img_b64,
+                },
+            })
+
+    content.append({"type": "text", "text": prompt})
 
     try:
         response = requests.post(
@@ -57,22 +97,25 @@ Réponds UNIQUEMENT en JSON valide :
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 300,
-                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 400,
+                "messages": [{"role": "user", "content": content}],
             },
-            timeout=20,
+            timeout=30,
         )
 
         if response.status_code != 200:
             logger.error(f"[AI] HTTP {response.status_code}: {response.text[:200]}")
             return _default_response()
 
-        content = response.json()["content"][0]["text"].strip()
-        content = content.replace("```json", "").replace("```", "").strip()
-        result = json.loads(content)
+        text = response.json()["content"][0]["text"].strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        result = json.loads(text)
         logger.info(
             f"[AI] {brand} — keep={result.get('keep')} | "
-            f"{result.get('verdict')} | {result.get('reason', '')[:60]}"
+            f"{result.get('verdict')} | "
+            f"runway={result.get('is_runway')} | "
+            f"collection={result.get('collection')} | "
+            f"{result.get('reason', '')[:50]}"
         )
         return result
 
@@ -89,6 +132,8 @@ def _default_response() -> dict:
         "keep": True,
         "is_trending": False,
         "is_authentic": True,
+        "is_runway": False,
+        "collection": None,
         "verdict": "correct",
         "reason": "",
         "market_value": None,
