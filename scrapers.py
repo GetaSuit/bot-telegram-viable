@@ -2,6 +2,7 @@ import requests
 import time
 import random
 import logging
+from datetime import datetime, timezone
 from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
     EBAY_APP_ID, EBAY_CERT_ID,
@@ -12,6 +13,9 @@ from config import (
 from ai_scorer import analyze_article
 
 logger = logging.getLogger(__name__)
+
+# Annonces de plus de 30 jours ignorées
+MAX_AGE_DAYS = 30
 
 
 # ──────────────────────────────────────────
@@ -33,6 +37,22 @@ def price_ok(price_raw) -> bool:
     if price is None:
         return False
     return MIN_PRICE <= price <= MAX_PRICE
+
+
+# ──────────────────────────────────────────
+# DATE
+# ──────────────────────────────────────────
+
+def is_recent(timestamp: int) -> bool:
+    """Retourne True si l'annonce a moins de MAX_AGE_DAYS jours."""
+    if not timestamp:
+        return True  # si pas de date, on laisse passer
+    try:
+        item_date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        days_old = (datetime.now(tz=timezone.utc) - item_date).days
+        return days_old <= MAX_AGE_DAYS
+    except Exception:
+        return True
 
 
 # ──────────────────────────────────────────
@@ -127,6 +147,13 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
             logger.error("[eBay] Token introuvable")
             return []
 
+        # Date limite : articles des 30 derniers jours
+        date_limit = datetime.utcnow().strftime("%Y-%m-%dT00:00:00Z")
+        cutoff = datetime.now(tz=timezone.utc).replace(
+            day=datetime.now().day - MAX_AGE_DAYS
+            if datetime.now().day > MAX_AGE_DAYS else 1
+        )
+
         for category in ["veste blazer", "manteau coat", "sac bag"]:
             params = {
                 "q": f"{brand} {category}",
@@ -155,6 +182,20 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 if not is_relevant(title, brand):
                     continue
 
+                # Filtre date eBay via itemCreationDate
+                item_date_str = item.get("itemCreationDate", "")
+                if item_date_str:
+                    try:
+                        item_date = datetime.fromisoformat(
+                            item_date_str.replace("Z", "+00:00")
+                        )
+                        days_old = (datetime.now(tz=timezone.utc) - item_date).days
+                        if days_old > MAX_AGE_DAYS:
+                            logger.debug(f"[eBay] Trop ancien ({days_old}j): {title}")
+                            continue
+                    except Exception:
+                        pass
+
                 parsed_price = parse_price(price_raw)
                 result = {
                     "title": title,
@@ -167,7 +208,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
 
                 base = compute_base_score(result, brand)
 
-                if base > 60:
+                if base > 80:
                     ai = analyze_article(
                         title=title,
                         brand=brand,
@@ -182,7 +223,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     result["ai_verdict"] = ai.get("verdict", "correct")
                     result["ai_reason"] = ai.get("reason", "")
                     result["is_hype"] = is_hype(title) or ai.get("is_trending", False)
-                    result["score"] = min(100, int(base * 0.5 + ai.get("ai_score", 50) * 0.5))
+                    result["score"] = min(100, int(base * 0.4 + ai.get("ai_score", 50) * 0.6))
                 else:
                     result["ai_score"] = 50
                     result["is_trending"] = False
@@ -280,6 +321,12 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                 if not price_ok(price_raw):
                     continue
                 if not is_relevant(title, brand):
+                    continue
+
+                # Filtre date Vinted
+                timestamp = item.get("updated_at_ts") or item.get("created_at_ts", 0)
+                if timestamp and not is_recent(timestamp):
+                    logger.debug(f"[Vinted] Trop ancien: {title}")
                     continue
 
                 parsed_price = parse_price(price_raw)
