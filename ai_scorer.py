@@ -15,13 +15,9 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 def analyze_article(title: str, brand: str, price: float, source: str) -> dict:
     """
-    Envoie l'article à Claude pour analyse.
-    Retourne un dict avec :
-    - ai_score (0-100)
-    - is_trending (bool)
-    - is_authentic (bool)
-    - verdict (str)
-    - reason (str)
+    Analyse un article via Claude.
+    Retourne ai_score, is_trending, is_authentic, verdict, reason.
+    Appelé uniquement si score technique > 60 pour limiter les coûts.
     """
     if not ANTHROPIC_API_KEY:
         return _default_response()
@@ -53,7 +49,7 @@ Critères pour ai_score élevé :
 Critères pour is_trending :
 - Marque portée par des célébrités récemment
 - Pièce vue dans les défilés 2024/2025
-- Style correspondant aux tendances actuelles (quiet luxury, tailoring, etc.)
+- Style correspondant aux tendances actuelles (quiet luxury, tailoring)
 
 Réponds uniquement avec le JSON, sans texte autour."""
 
@@ -74,11 +70,8 @@ Réponds uniquement avec le JSON, sans texte autour."""
         )
         response.raise_for_status()
         content = response.json()["content"][0]["text"].strip()
-
-        # Nettoyage si backticks
         content = content.replace("```json", "").replace("```", "").strip()
         result = json.loads(content)
-
         logger.info(f"[AI] {brand} — {result.get('verdict')} (score {result.get('ai_score')})")
         return result
 
@@ -88,7 +81,6 @@ Réponds uniquement avec le JSON, sans texte autour."""
 
 
 def _default_response() -> dict:
-    """Réponse par défaut si l'API est indisponible."""
     return {
         "ai_score": 50,
         "is_trending": False,
