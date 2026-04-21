@@ -10,13 +10,17 @@ import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    BotCommand,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    JobQueue,
 )
 
 from config import (
@@ -25,9 +29,6 @@ from config import (
     BRANDS,
     MIN_PRICE,
     MAX_PRICE,
-    TIER1_BRANDS,
-    TIER2_BRANDS,
-    TIER3_BRANDS,
     SCAN_INTERVAL_MINUTES,
 )
 from scrapers import search_ebay, search_vinted, search_all_sources
@@ -73,10 +74,8 @@ def format_article(item: dict, brand: str) -> str:
     ai_reason = item.get("ai_reason", "")
     market_value = item.get("market_value")
 
-    # Header coup du jour
-    header = "🔥 *COUP DU JOUR* — Tendance du moment !\n" if is_hype else ""
+    header = "🔥 *COUP DU JOUR* — Tendance du moment !\n\n" if is_hype else ""
 
-    # Verdict IA
     verdict_icons = {
         "excellent": "🏆",
         "bon": "✅",
@@ -85,9 +84,8 @@ def format_article(item: dict, brand: str) -> str:
         "suspect": "⚠️",
     }
     icon = verdict_icons.get(ai_verdict, "🔍")
-    verdict_line = f"{icon} *{ai_reason}*\n" if ai_reason else ""
+    verdict_line = f"{icon} _{ai_reason}_\n\n" if ai_reason else ""
 
-    # Valeur marché estimée par Claude
     market_line = ""
     if market_value:
         try:
@@ -95,19 +93,19 @@ def format_article(item: dict, brand: str) -> str:
             px = float(str(price))
             profit = mv - px
             market_line = (
-                f"💹 Valeur marché : ~{mv:.0f}€\n"
-                f"✅ Profit potentiel : +{profit:.0f}€\n"
+                f"💹 *Valeur marché estimée* : ~{mv:.0f}€\n"
+                f"📊 *Profit potentiel* : +{profit:.0f}€\n"
             )
         except Exception:
-            market_line = f"💹 Valeur marché : ~{market_value}€\n"
+            market_line = f"💹 *Valeur marché* : ~{market_value}€\n"
 
     return (
         f"{header}"
         f"{verdict_line}"
-        f"🏷️ *{title}*\n"
-        f"🔍 Source : {source}\n"
-        f"💰 Prix demandé : {price}€\n"
+        f"🏷️ *{title}*\n\n"
+        f"💰 *Prix demandé* : {price}€\n"
         f"{market_line}"
+        f"📦 *Source* : {source}\n\n"
         f"🔗 [Voir l'annonce]({url})"
     )
 
@@ -135,7 +133,7 @@ async def send_article(bot, item: dict, brand: str):
             await bot.send_message(
                 chat_id=CHAT_ID,
                 text=(
-                    f"🔥🔥 *COUP DU JOUR DÉTECTÉ* 🔥🔥\n"
+                    f"🔥🔥 *COUP DU JOUR* 🔥🔥\n"
                     f"*{brand}* — Article tendance repéré !"
                 ),
                 parse_mode="Markdown",
@@ -191,10 +189,7 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     for brand in batch:
         try:
             results = search_all_sources(brand)
-            new_items = [
-                r for r in results
-                if not is_already_seen(r.get("url", ""))
-            ]
+            new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
             for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
@@ -215,74 +210,101 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "👋 *Bot Sourcing Luxe actif*\n\n"
-        "📦 Sources : eBay · Vinted\n"
-        f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🏷️ {len(BRANDS)} marques surveillées\n"
-        f"🤖 Sélection 100% par IA\n\n"
-        "Commandes :\n"
-        "/scan — Scan immédiat\n"
-        "/chercher — Rechercher une marque\n"
-        "/test\\_sources — Tester les sources\n"
-        "/marques — Marques par tier\n"
-        "/status — État du bot\n"
-        "/help — Aide"
+        "👑 *Bienvenue sur GetaSuit Sourcing*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 Ton assistant IA de sourcing luxe\n"
+        "Chaque article est analysé par Claude :\n"
+        "cote réelle · tendances · profit potentiel\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "📦 *Sources* : eBay · Vinted\n"
+        f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"🏷️ *Marques* : {len(BRANDS)} maisons surveillées\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Utilise le menu / pour accéder aux commandes"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔍 Lancer un scan", callback_data="do_scan"),
+            InlineKeyboardButton("🏷️ Voir les marques", callback_data="do_marques"),
+        ],
+        [
+            InlineKeyboardButton("📊 Statut", callback_data="do_status"),
+            InlineKeyboardButton("❓ Aide", callback_data="do_help"),
+        ],
+    ])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "📖 *Aide — Bot Sourcing Luxe*\n\n"
-        "/start — Démarrer\n"
-        "/scan — Scan manuel\n"
-        "/chercher <marque> — Ex: `/chercher Hermès`\n"
-        "/test\\_sources — Diagnostic sources\n"
-        "/marques — Liste des marques\n"
-        "/status — État\n"
-        "/help — Ce message\n\n"
-        "🤖 *Chaque article est analysé par Claude* :\n"
-        "— Cote réelle sur le marché\n"
-        "— Archives et collections\n"
-        "— Tendances actuelles\n"
-        "— Profit potentiel estimé\n\n"
-        "🔥 *COUP DU JOUR* = tendance star/défilé/magazine"
+        "❓ *Aide — GetaSuit Sourcing*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔄 /scan — Lance un scan immédiat\n"
+        "🔎 /chercher — Recherche par marque\n"
+        "   _Ex : /chercher Hermès_\n\n"
+        "🏷️ /marques — Liste des maisons surveillées\n"
+        "📊 /status — État du bot en temps réel\n"
+        "🔬 /test\\_sources — Diagnostic eBay & Vinted\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🤖 *Comment fonctionne l'IA ?*\n\n"
+        "Chaque article trouvé est analysé par Claude :\n"
+        "• Cote réelle sur Vestiaire, RealReal, eBay\n"
+        "• Archives de collections & défilés\n"
+        "• Tendances actuelles (quiet luxury, tailoring)\n"
+        "• Valeur marché estimée & profit potentiel\n\n"
+        "🔥 *COUP DU JOUR* = pièce tendance repérée\n"
+        "chez une star, en défilé ou en magazine"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress = _scan_cursor["index"]
+    pct = int((progress / len(BRANDS)) * 100)
+    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
     text = (
-        "📊 *Statut du bot*\n\n"
-        f"✅ Heure : {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-        f"🔁 Scan auto toutes les : {SCAN_INTERVAL_MINUTES} min\n"
-        f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
-        f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🏷️ Marques surveillées : {len(BRANDS)}\n"
-        f"🤖 Sélection 100% IA Claude\n"
-        f"📡 Sources : eBay · Vinted"
+        "📊 *Statut — GetaSuit Sourcing*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🟢 *Bot actif*\n"
+        f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n\n"
+        f"🔁 *Scan auto* : toutes les {SCAN_INTERVAL_MINUTES} min\n"
+        f"📦 *Progression* : [{bar}] {pct}%\n"
+        f"   Marque {progress}/{len(BRANDS)} en cours\n\n"
+        f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"🏷️ *Marques* : {len(BRANDS)} surveillées\n"
+        f"🤖 *IA* : Claude Sonnet — actif\n"
+        f"📡 *Sources* : eBay · Vinted"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t1 = "\n".join(f"  · {b}" for b in sorted(TIER1_BRANDS))
-    t2 = "\n".join(f"  · {b}" for b in sorted(TIER2_BRANDS))
-    t3 = "\n".join(f"  · {b}" for b in sorted(TIER3_BRANDS))
-    text = (
-        "🏷️ *Marques surveillées*\n\n"
-        f"🥇 *Tier 1 — ×2.5* :\n{t1}\n\n"
-        f"🥈 *Tier 2 — ×2.0* :\n{t2}\n\n"
-        f"🥉 *Tier 3 — ×1.8* :\n{t3}"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    sorted_brands = sorted(BRANDS)
+    # Affichage en 2 colonnes
+    lines = ["🏷️ *Maisons surveillées*\n━━━━━━━━━━━━━━━━━━━━━\n"]
+    for b in sorted_brands:
+        lines.append(f"  · {b}")
+    lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"*{len(BRANDS)} maisons au total*")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Scan lancé en arrière-plan...")
+    await update.message.reply_text(
+        "🔄 *Scan lancé*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🤖 L'IA analyse chaque article...\n"
+        "_Les résultats arrivent dans quelques instants_",
+        parse_mode="Markdown"
+    )
     context.application.job_queue.run_once(scan_job, when=0, name="scan_manuel")
 
 async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            "❌ Précise une marque.\nEx: `/chercher Hermès`",
+            "🔎 *Recherche par marque*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "❌ Aucune marque précisée.\n\n"
+            "*Utilisation :*\n"
+            "`/chercher Hermès`\n"
+            "`/chercher Tom Ford`\n\n"
+            "Tape /marques pour voir la liste complète",
             parse_mode="Markdown"
         )
         return
@@ -294,13 +316,19 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not brand_match:
         await update.message.reply_text(
-            f"❌ Marque `{brand}` non reconnue.\nTape /marques pour voir la liste.",
+            f"❌ *Marque non reconnue* : `{brand}`\n\n"
+            f"Tape /marques pour voir la liste complète.",
             parse_mode="Markdown"
         )
         return
 
     await update.message.reply_text(
-        f"🔍 Recherche en cours pour *{brand_match}*...\n🤖 Analyse IA de chaque article...",
+        f"🔎 *Recherche en cours*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏷️ Marque : *{brand_match}*\n"
+        f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"🤖 Analyse IA de chaque article...\n\n"
+        f"_Résultats dans quelques instants_",
         parse_mode="Markdown"
     )
 
@@ -309,13 +337,15 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not new_items:
         await update.message.reply_text(
-            f"⚠️ Aucun article validé par l'IA pour *{brand_match}*.",
+            f"⚠️ *Aucun résultat*\n\n"
+            f"L'IA n'a retenu aucun article pour *{brand_match}*.\n"
+            f"Réessaie plus tard ou scanne une autre marque.",
             parse_mode="Markdown"
         )
         return
 
     await update.message.reply_text(
-        f"✅ *{len(new_items)}* article(s) sélectionné(s) par l'IA pour *{brand_match}*",
+        f"✅ *{len(new_items)} article(s) sélectionné(s)* par l'IA pour *{brand_match}*",
         parse_mode="Markdown"
     )
 
@@ -327,39 +357,50 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1.5)
 
 async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Test des sources en cours...")
+    await update.message.reply_text(
+        "🔬 *Diagnostic des sources*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "_Test en cours..._",
+        parse_mode="Markdown"
+    )
     brand = "Hermès"
-    lines = [f"📊 *Diagnostic* — `{brand}` ({MIN_PRICE}€–{MAX_PRICE}€)\n"]
+    lines = [
+        f"🔬 *Diagnostic — {brand}*",
+        f"━━━━━━━━━━━━━━━━━━━━━",
+        f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n",
+    ]
     for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
         try:
             res = fn(brand)
             if res:
                 sample = res[0]
                 lines.append(
-                    f"✅ *{name}* : {len(res)} articles validés par IA\n"
-                    f"   Ex: {str(sample.get('title',''))[:40]}… "
-                    f"— {sample.get('price')}€\n"
-                    f"   {sample.get('ai_reason', '')[:60]}"
+                    f"✅ *{name}* : {len(res)} article(s) validé(s)\n"
+                    f"   📌 {str(sample.get('title',''))[:45]}…\n"
+                    f"   💰 {sample.get('price')}€\n"
+                    f"   🤖 _{sample.get('ai_reason', 'Analyse IA')[:60]}_"
                 )
             else:
-                lines.append(f"⚠️ *{name}* : 0 article retenu par l'IA")
+                lines.append(f"⚠️ *{name}* : aucun article retenu par l'IA")
         except Exception as e:
-            lines.append(f"❌ *{name}* : `{str(e)[:80]}`")
-    lines.append(f"\n🕐 {datetime.now().strftime('%H:%M:%S')}")
+            lines.append(f"❌ *{name}* : erreur\n   `{str(e)[:60]}`")
+    lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ──────────────────────────────────────────
-# CALLBACKS BOUTONS
+# CALLBACKS BOUTONS INLINE
 # ──────────────────────────────────────────
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     if query.data == "interested":
         await query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⭐ Marqué comme intéressant", callback_data="noop")
+                InlineKeyboardButton("⭐ Sauvegardé", callback_data="noop")
             ]])
         )
     elif query.data == "ignore":
@@ -367,6 +408,43 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🗑️ Ignoré", callback_data="noop")
             ]])
+        )
+    elif query.data == "do_scan":
+        await query.message.reply_text(
+            "🔄 *Scan lancé en arrière-plan...*",
+            parse_mode="Markdown"
+        )
+        context.application.job_queue.run_once(scan_job, when=0, name="scan_btn")
+    elif query.data == "do_marques":
+        sorted_brands = sorted(BRANDS)
+        lines = ["🏷️ *Maisons surveillées*\n━━━━━━━━━━━━━━━━━━━━━\n"]
+        for b in sorted_brands:
+            lines.append(f"  · {b}")
+        lines.append(f"\n*{len(BRANDS)} maisons au total*")
+        await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    elif query.data == "do_status":
+        progress = _scan_cursor["index"]
+        pct = int((progress / len(BRANDS)) * 100)
+        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+        await query.message.reply_text(
+            f"📊 *Statut*\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🟢 Bot actif\n"
+            f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n"
+            f"📦 Progression : [{bar}] {pct}%\n"
+            f"🤖 IA Claude : active",
+            parse_mode="Markdown"
+        )
+    elif query.data == "do_help":
+        await query.message.reply_text(
+            "❓ *Commandes disponibles*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔄 /scan — Scan immédiat\n"
+            "🔎 /chercher — Recherche par marque\n"
+            "🏷️ /marques — Liste des maisons\n"
+            "📊 /status — État du bot\n"
+            "🔬 /test\\_sources — Diagnostic\n"
+            "❓ /help — Aide complète",
+            parse_mode="Markdown"
         )
 
 
@@ -383,6 +461,7 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -392,6 +471,7 @@ def main():
     app.add_handler(CommandHandler("test_sources", cmd_test_sources))
     app.add_handler(CallbackQueryHandler(button_callback))
 
+    # Scan automatique
     app.job_queue.run_repeating(
         scan_job,
         interval=SCAN_INTERVAL_MINUTES * 60,
@@ -401,7 +481,7 @@ def main():
 
     logger.info(
         f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"sélection 100% IA | {SCAN_INTERVAL_MINUTES}min"
+        f"IA Claude | {SCAN_INTERVAL_MINUTES}min"
     )
 
     while True:
@@ -412,7 +492,7 @@ def main():
                 close_loop=False,
             )
         except Exception as e:
-            logger.warning(f"⚠️ Conflit détecté, redémarrage dans 15s : {e}")
+            logger.warning(f"⚠️ Conflit, redémarrage dans 15s : {e}")
             time.sleep(15)
             continue
         break
