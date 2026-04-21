@@ -1,3 +1,4 @@
+from ai_scorer import analyze_article
 import requests
 import time
 import random
