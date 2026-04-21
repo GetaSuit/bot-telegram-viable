@@ -39,9 +39,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Seuil minimum pour envoyer un article
-MIN_SCORE = 80
-
 
 # ──────────────────────────────────────────
 # SERVEUR HTTP — KEEP ALIVE RENDER
@@ -63,76 +60,54 @@ def start_health_server():
 
 
 # ──────────────────────────────────────────
-# HELPERS
+# FORMATAGE ARTICLE
 # ──────────────────────────────────────────
-
-MULTIPLIERS = {"T1": 2.5, "T2": 2.0, "T3": 1.8}
-
-def get_tier(brand: str) -> str:
-    if brand in TIER1_BRANDS:
-        return "T1"
-    if brand in TIER2_BRANDS:
-        return "T2"
-    return "T3"
-
-def estimate_resale(price_raw, brand: str) -> str:
-    try:
-        price = float(str(price_raw).replace(",", ".").replace("€", "").strip())
-        if price <= 0:
-            return "💰 Prix non disponible"
-        tier = get_tier(brand)
-        mult = MULTIPLIERS[tier]
-        resale = price * mult
-        profit = resale - price
-        return (
-            f"💰 Achat : {price:.0f}€\n"
-            f"📈 Revente estimée ({tier} ×{mult}) : {resale:.0f}€\n"
-            f"✅ Marge brute : +{profit:.0f}€"
-        )
-    except Exception as e:
-        logger.warning(f"[estimate_resale] Erreur: {e}")
-        return "💰 Prix non disponible"
-
-def score_emoji(score: int) -> str:
-    if score >= 90:
-        return "🔥"
-    if score >= 80:
-        return "⭐"
-    return "👍"
 
 def format_article(item: dict, brand: str) -> str:
     title = item.get("title", "Sans titre")
     price = item.get("price", "?")
     source = item.get("source", "?")
     url = item.get("url", "")
-    score = item.get("score", 0)
     is_hype = item.get("is_hype", False)
     ai_verdict = item.get("ai_verdict", "")
     ai_reason = item.get("ai_reason", "")
-    resale_info = estimate_resale(price, brand)
+    market_value = item.get("market_value")
 
+    # Header coup du jour
     header = "🔥 *COUP DU JOUR* — Tendance du moment !\n" if is_hype else ""
 
-    # Verdict IA affiché uniquement si disponible et pas "indisponible"
-    verdict_line = ""
-    if ai_verdict and ai_reason and ai_reason != "Analyse IA indisponible":
-        verdict_icons = {
-            "excellent": "🏆",
-            "bon": "✅",
-            "correct": "👍",
-            "faible": "💤",
-            "suspect": "⚠️",
-        }
-        icon = verdict_icons.get(ai_verdict, "🔍")
-        verdict_line = f"{icon} IA : {ai_reason}\n"
+    # Verdict IA
+    verdict_icons = {
+        "excellent": "🏆",
+        "bon": "✅",
+        "correct": "👍",
+        "faible": "💤",
+        "suspect": "⚠️",
+    }
+    icon = verdict_icons.get(ai_verdict, "🔍")
+    verdict_line = f"{icon} *{ai_reason}*\n" if ai_reason else ""
+
+    # Valeur marché estimée par Claude
+    market_line = ""
+    if market_value:
+        try:
+            mv = float(market_value)
+            px = float(str(price))
+            profit = mv - px
+            market_line = (
+                f"💹 Valeur marché : ~{mv:.0f}€\n"
+                f"✅ Profit potentiel : +{profit:.0f}€\n"
+            )
+        except Exception:
+            market_line = f"💹 Valeur marché : ~{market_value}€\n"
 
     return (
         f"{header}"
-        f"{score_emoji(score)} Score : {score}/100\n"
         f"{verdict_line}"
         f"🏷️ *{title}*\n"
         f"🔍 Source : {source}\n"
-        f"{resale_info}\n"
+        f"💰 Prix demandé : {price}€\n"
+        f"{market_line}"
         f"🔗 [Voir l'annonce]({url})"
     )
 
@@ -151,11 +126,6 @@ def build_keyboard(item: dict) -> InlineKeyboardMarkup:
 # ──────────────────────────────────────────
 
 async def send_article(bot, item: dict, brand: str):
-    # Filtre score minimum
-    if item.get("score", 0) < MIN_SCORE:
-        logger.debug(f"[send] Score trop bas ({item.get('score')}/100) — ignoré: {item.get('title')}")
-        return
-
     text = format_article(item, brand)
     keyboard = build_keyboard(item)
     image = item.get("image")
@@ -221,13 +191,11 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     for brand in batch:
         try:
             results = search_all_sources(brand)
-            # Filtre score minimum avant envoi
-            good_items = [
+            new_items = [
                 r for r in results
-                if r.get("score", 0) >= MIN_SCORE
-                and not is_already_seen(r.get("url", ""))
+                if not is_already_seen(r.get("url", ""))
             ]
-            for item in good_items[:MAX_PER_BRAND]:
+            for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
                     mark_as_seen(url)
@@ -238,7 +206,7 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
         await asyncio.sleep(5)
 
-    logger.info(f"✅ Batch terminé — {total_sent} articles ≥ {MIN_SCORE}/100 envoyés")
+    logger.info(f"✅ Batch terminé — {total_sent} articles envoyés")
 
 
 # ──────────────────────────────────────────
@@ -251,10 +219,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📦 Sources : eBay · Vinted\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n"
-        f"🎯 Score minimum : {MIN_SCORE}/100\n"
-        f"🤖 Analyse IA activée\n\n"
+        f"🤖 Sélection 100% par IA\n\n"
         "Commandes :\n"
-        "/scan — Scan automatique\n"
+        "/scan — Scan immédiat\n"
         "/chercher — Rechercher une marque\n"
         "/test\\_sources — Tester les sources\n"
         "/marques — Marques par tier\n"
@@ -273,10 +240,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/marques — Liste des marques\n"
         "/status — État\n"
         "/help — Ce message\n\n"
-        "📊 *Score de pertinence :*\n"
-        "🔥 90–100 — Opportunité exceptionnelle\n"
-        "⭐ 80–89 — Excellent article\n"
-        f"💤 Sous {MIN_SCORE} — Non affiché\n\n"
+        "🤖 *Chaque article est analysé par Claude* :\n"
+        "— Cote réelle sur le marché\n"
+        "— Archives et collections\n"
+        "— Tendances actuelles\n"
+        "— Profit potentiel estimé\n\n"
         "🔥 *COUP DU JOUR* = tendance star/défilé/magazine"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -289,9 +257,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔁 Scan auto toutes les : {SCAN_INTERVAL_MINUTES} min\n"
         f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🎯 Score minimum affiché : {MIN_SCORE}/100\n"
         f"🏷️ Marques surveillées : {len(BRANDS)}\n"
-        f"🤖 Analyse IA : activée (score > 80)\n"
+        f"🤖 Sélection 100% IA Claude\n"
         f"📡 Sources : eBay · Vinted"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -333,34 +300,26 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        f"🔍 Recherche en cours pour *{brand_match}*...\n"
-        f"🤖 Analyse IA + filtre score ≥ {MIN_SCORE}/100",
+        f"🔍 Recherche en cours pour *{brand_match}*...\n🤖 Analyse IA de chaque article...",
         parse_mode="Markdown"
     )
 
     results = search_all_sources(brand_match)
+    new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
 
-    # Filtre score minimum
-    good_items = [
-        r for r in results
-        if r.get("score", 0) >= MIN_SCORE
-        and not is_already_seen(r.get("url", ""))
-    ]
-
-    if not good_items:
+    if not new_items:
         await update.message.reply_text(
-            f"⚠️ Aucun article ≥ {MIN_SCORE}/100 trouvé pour *{brand_match}*.\n"
-            f"Les articles de qualité insuffisante sont filtrés automatiquement.",
+            f"⚠️ Aucun article validé par l'IA pour *{brand_match}*.",
             parse_mode="Markdown"
         )
         return
 
     await update.message.reply_text(
-        f"✅ {len(good_items)} article(s) ≥ {MIN_SCORE}/100 trouvé(s) pour *{brand_match}*",
+        f"✅ *{len(new_items)}* article(s) sélectionné(s) par l'IA pour *{brand_match}*",
         parse_mode="Markdown"
     )
 
-    for item in good_items[:15]:
+    for item in new_items[:15]:
         url = item.get("url", "")
         if url:
             mark_as_seen(url)
@@ -374,17 +333,16 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
         try:
             res = fn(brand)
-            good = [r for r in res if r.get("score", 0) >= MIN_SCORE]
             if res:
                 sample = res[0]
                 lines.append(
-                    f"✅ *{name}* : {len(res)} résultats / {len(good)} ≥ {MIN_SCORE}\n"
+                    f"✅ *{name}* : {len(res)} articles validés par IA\n"
                     f"   Ex: {str(sample.get('title',''))[:40]}… "
-                    f"— {sample.get('price')}€ "
-                    f"(score: {sample.get('score', 0)})"
+                    f"— {sample.get('price')}€\n"
+                    f"   {sample.get('ai_reason', '')[:60]}"
                 )
             else:
-                lines.append(f"⚠️ *{name}* : 0 résultat")
+                lines.append(f"⚠️ *{name}* : 0 article retenu par l'IA")
         except Exception as e:
             lines.append(f"❌ *{name}* : `{str(e)[:80]}`")
     lines.append(f"\n🕐 {datetime.now().strftime('%H:%M:%S')}")
@@ -443,7 +401,7 @@ def main():
 
     logger.info(
         f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"score min {MIN_SCORE} | {SCAN_INTERVAL_MINUTES}min | IA activée"
+        f"sélection 100% IA | {SCAN_INTERVAL_MINUTES}min"
     )
 
     while True:
