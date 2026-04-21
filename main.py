@@ -39,6 +39,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Seuil minimum pour envoyer un article
+MIN_SCORE = 80
+
 
 # ──────────────────────────────────────────
 # SERVEUR HTTP — KEEP ALIVE RENDER
@@ -91,13 +94,11 @@ def estimate_resale(price_raw, brand: str) -> str:
         return "💰 Prix non disponible"
 
 def score_emoji(score: int) -> str:
-    if score >= 80:
+    if score >= 90:
         return "🔥"
-    if score >= 60:
+    if score >= 80:
         return "⭐"
-    if score >= 40:
-        return "👍"
-    return "💤"
+    return "👍"
 
 def format_article(item: dict, brand: str) -> str:
     title = item.get("title", "Sans titre")
@@ -112,8 +113,9 @@ def format_article(item: dict, brand: str) -> str:
 
     header = "🔥 *COUP DU JOUR* — Tendance du moment !\n" if is_hype else ""
 
+    # Verdict IA affiché uniquement si disponible et pas "indisponible"
     verdict_line = ""
-    if ai_verdict and ai_reason:
+    if ai_verdict and ai_reason and ai_reason != "Analyse IA indisponible":
         verdict_icons = {
             "excellent": "🏆",
             "bon": "✅",
@@ -149,6 +151,11 @@ def build_keyboard(item: dict) -> InlineKeyboardMarkup:
 # ──────────────────────────────────────────
 
 async def send_article(bot, item: dict, brand: str):
+    # Filtre score minimum
+    if item.get("score", 0) < MIN_SCORE:
+        logger.debug(f"[send] Score trop bas ({item.get('score')}/100) — ignoré: {item.get('title')}")
+        return
+
     text = format_article(item, brand)
     keyboard = build_keyboard(item)
     image = item.get("image")
@@ -214,8 +221,13 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     for brand in batch:
         try:
             results = search_all_sources(brand)
-            new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
-            for item in new_items[:MAX_PER_BRAND]:
+            # Filtre score minimum avant envoi
+            good_items = [
+                r for r in results
+                if r.get("score", 0) >= MIN_SCORE
+                and not is_already_seen(r.get("url", ""))
+            ]
+            for item in good_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
                 if url:
                     mark_as_seen(url)
@@ -226,7 +238,7 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
         await asyncio.sleep(5)
 
-    logger.info(f"✅ Batch terminé — {total_sent} articles envoyés")
+    logger.info(f"✅ Batch terminé — {total_sent} articles ≥ {MIN_SCORE}/100 envoyés")
 
 
 # ──────────────────────────────────────────
@@ -239,6 +251,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📦 Sources : eBay · Vinted\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} marques surveillées\n"
+        f"🎯 Score minimum : {MIN_SCORE}/100\n"
         f"🤖 Analyse IA activée\n\n"
         "Commandes :\n"
         "/scan — Scan automatique\n"
@@ -261,12 +274,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status — État\n"
         "/help — Ce message\n\n"
         "📊 *Score de pertinence :*\n"
-        "🔥 80–100 — Opportunité excellente\n"
-        "⭐ 60–79 — Bon article\n"
-        "👍 40–59 — Correct\n"
-        "💤 0–39 — Faible intérêt\n\n"
-        "🔥 *COUP DU JOUR* = article tendance\n"
-        "vu sur star / défilé / magazine"
+        "🔥 90–100 — Opportunité exceptionnelle\n"
+        "⭐ 80–89 — Excellent article\n"
+        f"💤 Sous {MIN_SCORE} — Non affiché\n\n"
+        "🔥 *COUP DU JOUR* = tendance star/défilé/magazine"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -278,8 +289,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔁 Scan auto toutes les : {SCAN_INTERVAL_MINUTES} min\n"
         f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"🎯 Score minimum affiché : {MIN_SCORE}/100\n"
         f"🏷️ Marques surveillées : {len(BRANDS)}\n"
-        f"🤖 Analyse IA : activée (score > 60)\n"
+        f"🤖 Analyse IA : activée (score > 80)\n"
         f"📡 Sources : eBay · Vinted"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -321,21 +333,34 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        f"🔍 Recherche en cours pour *{brand_match}*...\n🤖 Analyse IA en cours...",
+        f"🔍 Recherche en cours pour *{brand_match}*...\n"
+        f"🤖 Analyse IA + filtre score ≥ {MIN_SCORE}/100",
         parse_mode="Markdown"
     )
 
     results = search_all_sources(brand_match)
-    new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
 
-    if not new_items:
+    # Filtre score minimum
+    good_items = [
+        r for r in results
+        if r.get("score", 0) >= MIN_SCORE
+        and not is_already_seen(r.get("url", ""))
+    ]
+
+    if not good_items:
         await update.message.reply_text(
-            f"⚠️ Aucun nouvel article trouvé pour *{brand_match}*.",
+            f"⚠️ Aucun article ≥ {MIN_SCORE}/100 trouvé pour *{brand_match}*.\n"
+            f"Les articles de qualité insuffisante sont filtrés automatiquement.",
             parse_mode="Markdown"
         )
         return
 
-    for item in new_items[:15]:
+    await update.message.reply_text(
+        f"✅ {len(good_items)} article(s) ≥ {MIN_SCORE}/100 trouvé(s) pour *{brand_match}*",
+        parse_mode="Markdown"
+    )
+
+    for item in good_items[:15]:
         url = item.get("url", "")
         if url:
             mark_as_seen(url)
@@ -349,14 +374,14 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
         try:
             res = fn(brand)
+            good = [r for r in res if r.get("score", 0) >= MIN_SCORE]
             if res:
                 sample = res[0]
                 lines.append(
-                    f"✅ *{name}* : {len(res)} résultats\n"
+                    f"✅ *{name}* : {len(res)} résultats / {len(good)} ≥ {MIN_SCORE}\n"
                     f"   Ex: {str(sample.get('title',''))[:40]}… "
                     f"— {sample.get('price')}€ "
-                    f"(score: {sample.get('score', 0)} | "
-                    f"IA: {sample.get('ai_verdict', 'n/a')})"
+                    f"(score: {sample.get('score', 0)})"
                 )
             else:
                 lines.append(f"⚠️ *{name}* : 0 résultat")
@@ -418,7 +443,7 @@ def main():
 
     logger.info(
         f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min | IA activée"
+        f"score min {MIN_SCORE} | {SCAN_INTERVAL_MINUTES}min | IA activée"
     )
 
     while True:
