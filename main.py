@@ -106,11 +106,28 @@ def format_article(item: dict, brand: str) -> str:
     url = item.get("url", "")
     score = item.get("score", 0)
     is_hype = item.get("is_hype", False)
+    ai_verdict = item.get("ai_verdict", "")
+    ai_reason = item.get("ai_reason", "")
     resale_info = estimate_resale(price, brand)
-    header = "🔥 *COUP DU JOUR* — Vu sur une star / défilé / magazine !\n" if is_hype else ""
+
+    header = "🔥 *COUP DU JOUR* — Tendance du moment !\n" if is_hype else ""
+
+    verdict_line = ""
+    if ai_verdict and ai_reason:
+        verdict_icons = {
+            "excellent": "🏆",
+            "bon": "✅",
+            "correct": "👍",
+            "faible": "💤",
+            "suspect": "⚠️",
+        }
+        icon = verdict_icons.get(ai_verdict, "🔍")
+        verdict_line = f"{icon} IA : {ai_reason}\n"
+
     return (
         f"{header}"
         f"{score_emoji(score)} Score : {score}/100\n"
+        f"{verdict_line}"
         f"🏷️ *{title}*\n"
         f"🔍 Source : {source}\n"
         f"{resale_info}\n"
@@ -142,8 +159,7 @@ async def send_article(bot, item: dict, brand: str):
                 chat_id=CHAT_ID,
                 text=(
                     f"🔥🔥 *COUP DU JOUR DÉTECTÉ* 🔥🔥\n"
-                    f"*{brand}* — Article tendance repéré !\n"
-                    f"Vu sur une star / défilé / magazine"
+                    f"*{brand}* — Article tendance repéré !"
                 ),
                 parse_mode="Markdown",
             )
@@ -222,7 +238,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Bot Sourcing Luxe actif*\n\n"
         "📦 Sources : eBay · Vinted\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🏷️ {len(BRANDS)} marques surveillées\n\n"
+        f"🏷️ {len(BRANDS)} marques surveillées\n"
+        f"🤖 Analyse IA activée\n\n"
         "Commandes :\n"
         "/scan — Scan automatique\n"
         "/chercher — Rechercher une marque\n"
@@ -247,7 +264,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 80–100 — Opportunité excellente\n"
         "⭐ 60–79 — Bon article\n"
         "👍 40–59 — Correct\n"
-        "💤 0–39 — Faible intérêt"
+        "💤 0–39 — Faible intérêt\n\n"
+        "🔥 *COUP DU JOUR* = article tendance\n"
+        "vu sur star / défilé / magazine"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -260,6 +279,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 Batch en cours : marque {progress}/{len(BRANDS)}\n"
         f"💶 Fourchette : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ Marques surveillées : {len(BRANDS)}\n"
+        f"🤖 Analyse IA : activée (score > 60)\n"
         f"📡 Sources : eBay · Vinted"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -301,7 +321,7 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        f"🔍 Recherche en cours pour *{brand_match}*...",
+        f"🔍 Recherche en cours pour *{brand_match}*...\n🤖 Analyse IA en cours...",
         parse_mode="Markdown"
     )
 
@@ -335,7 +355,8 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ *{name}* : {len(res)} résultats\n"
                     f"   Ex: {str(sample.get('title',''))[:40]}… "
                     f"— {sample.get('price')}€ "
-                    f"(score: {sample.get('score', 0)})"
+                    f"(score: {sample.get('score', 0)} | "
+                    f"IA: {sample.get('ai_verdict', 'n/a')})"
                 )
             else:
                 lines.append(f"⚠️ *{name}* : 0 résultat")
@@ -397,7 +418,7 @@ def main():
 
     logger.info(
         f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min"
+        f"batch {BATCH_SIZE} | {SCAN_INTERVAL_MINUTES}min | IA activée"
     )
 
     while True:
