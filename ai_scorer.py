@@ -14,11 +14,6 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 
 def analyze_article(title: str, brand: str, price: float, source: str) -> dict:
-    """
-    Analyse un article via Claude.
-    Retourne ai_score, is_trending, is_authentic, verdict, reason.
-    Appelé uniquement si score technique > 60 pour limiter les coûts.
-    """
     if not ANTHROPIC_API_KEY:
         return _default_response()
 
@@ -62,7 +57,7 @@ Réponds uniquement avec le JSON, sans texte autour."""
                 "anthropic-version": "2023-06-01",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
                 "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}],
             },
