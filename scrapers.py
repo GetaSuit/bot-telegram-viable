@@ -310,7 +310,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE):
                     result["ai_verdict"] = ai.get("verdict", "correct")
                     result["ai_reason"] = ai.get("reason", "")
                     result["is_hype"] = is_hype(title, desc) or ai.get("is_trending", False)
-                    result["score"] = min(100, int(base * 0.5 + ai.get("ai_score", 50) * 0.5))
+                    result["score"] = min(100, int(base * 0.4 + ai.get("ai_score", 50) * 0.6))
                 else:
                     result["ai_score"] = 50
                     result["is_trending"] = False
