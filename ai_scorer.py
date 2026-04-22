@@ -73,17 +73,18 @@ TON ANALYSE EN 3 ÉTAPES :
 
 ---
 
+# APRÈS
 CRITÈRES POUR keep=true :
-✅ Marge nette ≥ 40% après commission
-✅ Pièce reconnaissable et demandée
-✅ Prix d'achat cohérent avec le marché
-✅ Liquidité bonne ou excellente
+✅ Profit net réaliste ≥ 30€ après commission plateforme
+✅ Pièce de marque authentique dans les catégories : veste, blazer, costume, manteau, sac
+✅ Prix d'achat permettant une revente visible sur le marché
+✅ Même faible marge si pièce rare, iconique ou de collection
 
 CRITÈRES POUR keep=false :
-❌ Marge insuffisante ou nulle
-❌ Pièce trop commune, saturée sur le marché
-❌ Doute sur l'authenticité
-❌ Catégorie hors-sujet (parfum, tech, etc.)
+❌ Profit net négatif ou inférieur à 30€
+❌ Contrefaçon évidente
+❌ Catégorie hors-sujet : parfum, tech, chaussures, accessoires, livres
+❌ Article trop dégradé ou incomplet
 
 Réponds UNIQUEMENT en JSON valide sans texte autour :
 {{
