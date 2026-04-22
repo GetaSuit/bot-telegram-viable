@@ -102,23 +102,28 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
         while offset < 200 and len(candidates) < max_articles * 3:
             params = {
                 "q": brand,
-                "filter": (
-                    f"price:[{min_price}..{max_price}],"
-                    f"currency:EUR"
-                ),
+                "filter": f"price:[{min_price}..{max_price}],currency:EUR",
                 "sort": "price",
                 "limit": limit,
                 "offset": offset,
             }
             r = requests.get(
                 "https://api.ebay.com/buy/browse/v1/item_summary/search",
-                headers={"Authorization": f"Bearer {token}"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
+                    "X-EBAY-C-ENDUSERCTX": "contextualLocation=country=FR,zip=75001",
+                    "Accept-Language": "fr-FR",
+                    "Content-Language": "fr-FR",
+                },
                 params=params,
                 timeout=15,
             )
             r.raise_for_status()
             data = r.json()
             items = data.get("itemSummaries", [])
+
+            logger.info(f"[eBay] offset={offset} → {len(items)} items bruts pour '{brand}'")
 
             if not items:
                 break
