@@ -1,321 +1,161 @@
-import requests
-import time
-import random
+import os
+import json
 import logging
-from config import (
-    BRANDS, MIN_PRICE, MAX_PRICE,
-    EBAY_APP_ID, EBAY_CERT_ID,
-    HYPE_KEYWORDS,
-)
-from ai_scorer import analyze_article
+import base64
+import requests
 
 logger = logging.getLogger(__name__)
 
-MAX_ARTICLES_PER_SOURCE = 10
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+
+if ANTHROPIC_API_KEY:
+    logger.info(f"[AI] Clé API chargée ({len(ANTHROPIC_API_KEY)} caractères)")
+else:
+    logger.error("[AI] ANTHROPIC_API_KEY manquante")
 
 
-def parse_price(price_raw) -> float | None:
+def fetch_image_base64(image_url: str) -> str | None:
     try:
-        if isinstance(price_raw, dict):
-            val = price_raw.get("amount") or price_raw.get("value", "")
-        else:
-            val = price_raw
-        return float(str(val).replace(",", ".").replace("€", "").replace(" ", "").strip())
-    except Exception:
+        r = requests.get(image_url, timeout=10)
+        r.raise_for_status()
+        return base64.standard_b64encode(r.content).decode("utf-8")
+    except Exception as e:
+        logger.warning(f"[AI] Image non récupérable: {e}")
         return None
 
-def price_ok(price_raw) -> bool:
-    price = parse_price(price_raw)
-    if price is None:
-        return False
-    return MIN_PRICE <= price <= MAX_PRICE
 
-def is_hype(title: str, description: str = "") -> bool:
-    text = (title + " " + description).lower()
-    return any(kw.lower() in text for kw in HYPE_KEYWORDS)
+def analyze_article(
+    title: str,
+    brand: str,
+    price: float,
+    source: str,
+    image_url: str = None,
+) -> dict:
+    if not ANTHROPIC_API_KEY:
+        return _default_response()
 
-def is_relevant(title: str, brand: str) -> bool:
-    if not title or not brand:
-        return False
-    title_lower = title.lower()
-    if brand.lower() not in title_lower:
-        return False
-    hard_excludes = [
-        "parfum", "perfume", "cologne", "eau de",
-        "iphone", "samsung", "ordinateur", "laptop",
-        "voiture", "moto", "vélo", "jouet", "toy",
-        "livre", "book", "dvd",
-    ]
-    for kw in hard_excludes:
-        if kw in title_lower:
-            return False
-    return True
+    prompt = f"""Tu es une fusion de trois experts au service d'un revendeur de mode luxe :
 
+🎩 COLLECTIONNEUR — Tu connais chaque collection, défilé et pièce iconique de chaque maison depuis leur création. Tu reconnais une veste Gucci Tom Ford FW2003 ou un sac Dior Saddle original.
+📊 ANALYSTE — Tu surveilles les prix réels sur Vestiaire Collective, The RealReal, eBay international. Tu connais la liquidité de chaque pièce.
+💼 ENTREPRENEUR — Tu penses marge nette, rotation rapide, risque minimal. Chaque article est un investissement.
 
-# ──────────────────────────────────────────
-# EBAY
-# ──────────────────────────────────────────
+---
 
-def get_ebay_token():
-    import base64
-    credentials = base64.b64encode(
-        f"{EBAY_APP_ID}:{EBAY_CERT_ID}".encode()
-    ).decode()
-    r = requests.post(
-        "https://api.ebay.com/identity/v1/oauth2/token",
-        headers={
-            "Authorization": f"Basic {credentials}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        data="grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
-        timeout=10,
-    )
-    return r.json().get("access_token")
+Article trouvé sur {source} :
+- Marque : {brand}
+- Titre : {title}
+- Prix demandé : {price}€
 
-def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
-                max_articles=MAX_ARTICLES_PER_SOURCE):
-    results = []
-    candidates = []
-    try:
-        token = get_ebay_token()
-        if not token:
-            logger.error("[eBay] Token introuvable")
-            return []
+---
 
-        offset = 0
-        limit = 50
+RÈGLE ABSOLUE — CE QUE TU CHERCHES :
+Un particulier qui ne connaît pas la vraie valeur de sa pièce et la vend bien en dessous du marché.
 
-        while offset < 200 and len(candidates) < max_articles * 3:
-            params = {
-                "q": brand,
-                "filter": f"price:[{min_price}..{max_price}],currency:EUR",
-                "sort": "price",
-                "limit": limit,
-                "offset": offset,
-            }
-            r = requests.get(
-                "https://api.ebay.com/buy/browse/v1/item_summary/search",
-                headers={"Authorization": f"Bearer {token}"},
-                params=params,
-                timeout=15,
-            )
-            r.raise_for_status()
-            data = r.json()
-            items = data.get("itemSummaries", [])
+REJETTE IMMÉDIATEMENT si :
+❌ Le titre contient des mots de revendeur professionnel qui connaît la valeur : "défilé", "runway", "collection SS", "FW", "archive", "pièce de collection", "cote", "édition limitée", "rare" — ce vendeur a déjà pricé sa pièce au bon prix
+❌ Le prix est déjà proche de la valeur marché (profit net < 50€ après 15% commission)
+❌ Catégorie hors-sujet : parfum, chaussures, tech, accessoires, livres
+❌ Contrefaçon évidente
+❌ Article trop usé ou incomplet
 
-            if not items:
-                break
+GARDE UNIQUEMENT si :
+✅ Le vendeur semble être un particulier qui sous-estime sa pièce
+✅ Titre simple sans jargon pro (ex: "veste Gucci noire taille 48", "manteau Dior homme")
+✅ La pièce vaut significativement plus que le prix demandé
+✅ Profit net réaliste ≥ 50€ après commission 15%
+✅ Catégorie ciblée : veste, blazer, costume, manteau, sac
 
-            for item in items:
-                title = item.get("title", "")
-                price_raw = item.get("price", {})
-                if not price_ok(price_raw):
-                    continue
-                if not is_relevant(title, brand):
-                    continue
-                candidates.append(item)
+ANALYSE EN 3 ÉTAPES :
+1. Ce vendeur est-il un particulier ou un revendeur professionnel ?
+2. Quelle est la vraie valeur marché de cette pièce aujourd'hui ?
+3. Y a-t-il une vraie opportunité de marge ?
 
-            offset += limit
-            if offset >= data.get("total", 0):
-                break
-            time.sleep(0.3)
+Réponds UNIQUEMENT en JSON valide sans texte autour :
+{{
+  "keep": <true ou false>,
+  "is_trending": <true si tendance 2024-2026>,
+  "is_authentic": <true si semble authentique>,
+  "is_runway": <true si pièce de défilé identifiée>,
+  "is_reseller": <true si vendeur professionnel détecté>,
+  "collection": <collection identifiée ex "Gucci FW2003" ou null>,
+  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
+  "reason": <une phrase : particulier/pro + écart de prix + opportunité>,
+  "market_value": <valeur marché réelle en euros ou null>,
+  "liquidity": <"rapide" | "normale" | "lente">,
+  "risk": <"faible" | "moyen" | "élevé">
+}}"""
 
-        logger.info(f"[eBay] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
+    content = []
 
-        for item in candidates[:max_articles]:
-            title = item.get("title", "")
-            parsed_price = parse_price(item.get("price", {}))
-            image_url = item.get("image", {}).get("imageUrl")
-            use_vision = is_hype(title)
-
-            ai = analyze_article(
-                title=title,
-                brand=brand,
-                price=parsed_price or 0,
-                source="eBay",
-                image_url=image_url if use_vision else None,
-            )
-
-            if not ai.get("keep", True):
-                logger.info(f"[eBay] Ignoré: {title[:50]}")
-                continue
-
-            if ai.get("is_reseller", False):
-                logger.info(f"[eBay] Revendeur pro ignoré: {title[:50]}")
-                continue
-
-            results.append({
-                "title": title,
-                "price": parsed_price,
-                "url": item.get("itemWebUrl"),
-                "image": image_url,
-                "source": "eBay",
-                "is_trending": ai.get("is_trending", False),
-                "is_hype": is_hype(title) or ai.get("is_trending", False),
-                "is_runway": ai.get("is_runway", False),
-                "collection": ai.get("collection"),
-                "ai_verdict": ai.get("verdict", "correct"),
-                "ai_reason": ai.get("reason", ""),
-                "market_value": ai.get("market_value"),
-                "liquidity": ai.get("liquidity", "normale"),
-                "risk": ai.get("risk", "moyen"),
+    if image_url:
+        img_b64 = fetch_image_base64(image_url)
+        if img_b64:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": img_b64,
+                },
             })
+            logger.info(f"[AI] Vision activée: {title[:40]}")
 
-        seen = set()
-        unique = []
-        for item in results:
-            if item["url"] not in seen:
-                seen.add(item["url"])
-                unique.append(item)
+    content.append({"type": "text", "text": prompt})
 
-        logger.info(f"[eBay] {len(unique)} articles validés pour '{brand}'")
-        return unique
-
-    except Exception as e:
-        logger.error(f"[eBay] Erreur '{brand}': {e}")
-        return []
-
-
-# ──────────────────────────────────────────
-# VINTED
-# ──────────────────────────────────────────
-
-VINTED_SESSION = requests.Session()
-VINTED_SESSION.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin": "https://www.vinted.fr",
-    "Referer": "https://www.vinted.fr/",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-})
-
-def _vinted_init_session():
     try:
-        VINTED_SESSION.get("https://www.vinted.fr", timeout=10, allow_redirects=True)
-        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
-        return True
+        response = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 500,
+                "messages": [{"role": "user", "content": content}],
+            },
+            timeout=30,
+        )
+
+        if response.status_code != 200:
+            logger.error(f"[AI] HTTP {response.status_code}: {response.text[:200]}")
+            return _default_response()
+
+        text = response.json()["content"][0]["text"].strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        result = json.loads(text)
+
+        logger.info(
+            f"[AI] {brand} — keep={result.get('keep')} | "
+            f"reseller={result.get('is_reseller')} | "
+            f"{result.get('verdict')} | "
+            f"market={result.get('market_value')}€ | "
+            f"{result.get('reason', '')[:50]}"
+        )
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[AI] JSON invalide: {e}")
+        return _default_response()
     except Exception as e:
-        logger.error(f"[Vinted] Init session: {e}")
-        return False
-
-def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
-                  max_articles=MAX_ARTICLES_PER_SOURCE):
-    results = []
-    candidates = []
-    try:
-        _vinted_init_session()
-
-        for page in range(1, 5):
-            params = {
-                "search_text": brand,
-                "price_from": min_price,
-                "price_to": max_price,
-                "currency": "EUR",
-                "per_page": 50,
-                "page": page,
-                "order": "relevance",
-            }
-            r = VINTED_SESSION.get(
-                "https://www.vinted.fr/api/v2/catalog/items",
-                params=params,
-                timeout=15,
-            )
-            r.raise_for_status()
-            items = r.json().get("items", [])
-
-            if not items:
-                break
-
-            for item in items:
-                title = item.get("title", "")
-                price_raw = item.get("price")
-                if not price_ok(price_raw):
-                    continue
-                if not is_relevant(title, brand):
-                    continue
-                candidates.append(item)
-
-            if len(candidates) >= max_articles * 3:
-                break
-
-            time.sleep(random.uniform(1.0, 1.5))
-
-        logger.info(f"[Vinted] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
-
-        for item in candidates[:max_articles]:
-            title = item.get("title", "")
-            price_raw = item.get("price")
-            desc = item.get("description", "") or ""
-            parsed_price = parse_price(price_raw)
-            photo = item.get("photo") or {}
-            image_url = photo.get("url")
-            use_vision = is_hype(title, desc)
-
-            ai = analyze_article(
-                title=title,
-                brand=brand,
-                price=parsed_price or 0,
-                source="Vinted",
-                image_url=image_url if use_vision else None,
-            )
-
-            if not ai.get("keep", True):
-                logger.info(f"[Vinted] Ignoré: {title[:50]}")
-                continue
-
-            if ai.get("is_reseller", False):
-                logger.info(f"[Vinted] Revendeur pro ignoré: {title[:50]}")
-                continue
-
-            results.append({
-                "title": title,
-                "price": parsed_price,
-                "url": f"https://www.vinted.fr/items/{item.get('id')}",
-                "image": image_url,
-                "source": "Vinted",
-                "is_trending": ai.get("is_trending", False),
-                "is_hype": is_hype(title, desc) or ai.get("is_trending", False),
-                "is_runway": ai.get("is_runway", False),
-                "collection": ai.get("collection"),
-                "ai_verdict": ai.get("verdict", "correct"),
-                "ai_reason": ai.get("reason", ""),
-                "market_value": ai.get("market_value"),
-                "liquidity": ai.get("liquidity", "normale"),
-                "risk": ai.get("risk", "moyen"),
-            })
-
-        seen = set()
-        unique = []
-        for item in results:
-            if item["url"] not in seen:
-                seen.add(item["url"])
-                unique.append(item)
-
-        logger.info(f"[Vinted] {len(unique)} articles validés pour '{brand}'")
-        return unique
-
-    except Exception as e:
-        logger.error(f"[Vinted] Erreur '{brand}': {e}")
-        return []
+        logger.error(f"[AI] Erreur: {e}")
+        return _default_response()
 
 
-# ──────────────────────────────────────────
-# UNIFIÉ
-# ──────────────────────────────────────────
-
-def search_all_sources(brand: str, max_articles=MAX_ARTICLES_PER_SOURCE):
-    all_results = []
-    all_results.extend(search_ebay(brand, max_articles=max_articles))
-    all_results.extend(search_vinted(brand, max_articles=max_articles))
-    return all_results
+def _default_response() -> dict:
+    return {
+        "keep": True,
+        "is_trending": False,
+        "is_authentic": True,
+        "is_runway": False,
+        "is_reseller": False,
+        "collection": None,
+        "verdict": "correct",
+        "reason": "",
+        "market_value": None,
+        "liquidity": "normale",
+        "risk": "moyen",
+    }
