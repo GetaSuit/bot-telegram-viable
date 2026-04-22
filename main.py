@@ -75,11 +75,15 @@ def format_article(item: dict, brand: str) -> str:
     ai_verdict = item.get("ai_verdict", "")
     ai_reason = item.get("ai_reason", "")
     market_value = item.get("market_value")
+    liquidity = item.get("liquidity", "")
+    risk = item.get("risk", "")
 
+    # Header
     header = "🔥 *COUP DU JOUR* — Tendance du moment !\n\n" if is_hype else ""
-    runway_line = "🎭 *Pièce de défilé détectée*\n" if is_runway else ""
+    runway_line = "🎭 *Pièce de défilé identifiée*\n" if is_runway else ""
     collection_line = f"👗 *Collection* : {collection}\n" if collection else ""
 
+    # Verdict
     verdict_icons = {
         "excellent": "🏆",
         "bon": "✅",
@@ -90,18 +94,33 @@ def format_article(item: dict, brand: str) -> str:
     icon = verdict_icons.get(ai_verdict, "🔍")
     verdict_line = f"{icon} _{ai_reason}_\n\n" if ai_reason else ""
 
+    # Marché
     market_line = ""
     if market_value:
         try:
             mv = float(market_value)
             px = float(str(price))
-            profit = mv - px
+            profit_brut = mv - px
+            commission = mv * 0.15
+            profit_net = profit_brut - commission
             market_line = (
-                f"💹 *Valeur marché* : ~{mv:.0f}€\n"
-                f"📊 *Profit potentiel* : +{profit:.0f}€\n"
+                f"💹 *Revente estimée* : ~{mv:.0f}€\n"
+                f"📊 *Profit net* (~15% comm.) : +{profit_net:.0f}€\n"
             )
         except Exception:
-            market_line = f"💹 *Valeur marché* : ~{market_value}€\n"
+            market_line = f"💹 *Revente estimée* : ~{market_value}€\n"
+
+    # Liquidité & risque
+    liquidity_icons = {"rapide": "🟢", "normale": "🟡", "lente": "🔴"}
+    risk_icons = {"faible": "🟢", "moyen": "🟡", "élevé": "🔴"}
+    meta_line = ""
+    if liquidity or risk:
+        l_icon = liquidity_icons.get(liquidity, "⚪")
+        r_icon = risk_icons.get(risk, "⚪")
+        meta_line = (
+            f"{l_icon} *Liquidité* : {liquidity} · "
+            f"{r_icon} *Risque* : {risk}\n"
+        )
 
     return (
         f"{header}"
@@ -111,6 +130,7 @@ def format_article(item: dict, brand: str) -> str:
         f"🏷️ *{title}*\n\n"
         f"💰 *Prix demandé* : {price}€\n"
         f"{market_line}"
+        f"{meta_line}"
         f"📦 *Source* : {source}\n\n"
         f"🔗 [Voir l'annonce]({url})"
     )
