@@ -35,40 +35,36 @@ def analyze_article(
     if not ANTHROPIC_API_KEY:
         return _default_response()
 
-    prompt = f"""Tu es un expert mondial en mode luxe, archives de défilés et sourcing de seconde main.
+    prompt = f"""Tu es un expert en mode luxe et sourcing de seconde main.
 
-Article trouvé sur {source} :
+Article sur {source} :
 - Marque : {brand}
 - Titre : {title}
-- Prix demandé : {price}€
+- Prix : {price}€
 
-Ta mission :
+RÈGLE PRINCIPALE : keep doit être TRUE par défaut.
+Mets keep à FALSE UNIQUEMENT si l'article est :
+- Une contrefaçon évidente (fake, replica, inspired)
+- Un parfum ou produit beauté
+- Un article technologique (téléphone, ordi)
+- Totalement hors-sujet (voiture, jouet, livre)
 
-1. ANALYSE VISUELLE (si image fournie) :
-   - Cette photo vient-elle d'un défilé, lookbook ou shooting éditorial ?
-   - Reconnais-tu cette pièce dans une collection spécifique ?
-     (remonte TOUTES les collections jamais créées par {brand} : SS, FW, Resort, Pre-Fall, Couture)
-   - Photo de particulier ou photo professionnelle ?
-   - Indices visuels de contrefaçon ?
+Pour TOUT le reste (vêtements, accessoires, sacs, même si pas parfait) → keep = TRUE
 
-2. ANALYSE MARCHÉ :
-   - Cote réelle sur Vestiaire Collective, The RealReal, eBay international
-   - Cette pièce appartient-elle à une collection iconique ou rare ?
-   - Le prix permet-il une revente rentable (×1.5 minimum) ?
+Analyse aussi :
+- Est-ce une pièce de défilé ou collection connue ?
+- Quelle est la valeur marché estimée ?
 
-Sois GÉNÉREUX : garde tout ce qui a du potentiel.
-Rejette uniquement : contrefaçons évidentes, parfums, tech, hors-sujet total.
-
-Réponds UNIQUEMENT en JSON valide :
+Réponds UNIQUEMENT en JSON :
 {{
-  "keep": <true ou false>,
+  "keep": <true SAUF si contrefaçon/parfum/tech/hors-sujet>,
   "is_trending": <true si tendance 2024-2026>,
-  "is_authentic": <true si semble authentique>,
+  "is_authentic": <true si pas de doute évident>,
   "is_runway": <true si photo ou pièce de défilé>,
-  "collection": <collection identifiée ex "Dior SS24" ou null>,
-  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
+  "collection": <"Marque Saison Année" ex "Dior SS24" ou null>,
+  "verdict": <"excellent" | "bon" | "correct" | "faible">,
   "reason": <une phrase courte>,
-  "market_value": <valeur marché estimée en euros ou null>
+  "market_value": <valeur revente estimée en euros ou null>
 }}"""
 
     content = []
@@ -128,6 +124,7 @@ Réponds UNIQUEMENT en JSON valide :
 
 
 def _default_response() -> dict:
+    """Par défaut on garde l'article si l'IA est indisponible."""
     return {
         "keep": True,
         "is_trending": False,
