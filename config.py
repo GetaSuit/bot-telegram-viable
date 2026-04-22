@@ -8,7 +8,7 @@ EBAY_CERT_ID = os.environ["EBAY_CERT_ID"]
 
 # ── Paramètres sourcing
 MIN_PRICE = 70
-MAX_PRICE = 400
+MAX_PRICE = 600
 SCAN_INTERVAL_MINUTES = 180
 
 # ── Mots-clés coup du jour
