@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -188,11 +188,8 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
 
     for brand in batch:
         try:
-            # Lance la recherche dans un thread séparé pour ne pas bloquer
             loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None, search_all_sources, brand
-            )
+            results = await loop.run_in_executor(None, search_all_sources, brand)
             new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
             for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
@@ -248,7 +245,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   _Ex : /chercher Hermès_\n\n"
         "🏷️ /marques — Maisons surveillées\n"
         "📊 /status — État du bot\n"
-        "🔬 /test\\_sources — Diagnostic\n\n"
+        "🔬 /test\\_sources — Diagnostic\n"
+        "♻️ /reset — Réinitialiser le bot\n"
+        "❓ /help — Ce message\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "🤖 *Analyse IA par article :*\n\n"
         "• Cote réelle (Vestiaire, RealReal, eBay)\n"
@@ -329,13 +328,13 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🏷️ Marque : *{brand_match}*\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-        f"🤖 Claude analyse chaque article...\n"
-        f"👁️ Vision activée sur articles hype\n\n"
+        f"🤖 Claude analyse chaque article...\n\n"
         f"_Résultats dans quelques instants_",
         parse_mode="Markdown"
     )
 
-    results = search_all_sources(brand_match)
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, search_all_sources, brand_match)
     new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
 
     if not new_items:
@@ -388,6 +387,23 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _scan_cursor["index"] = 0
+    try:
+        open("/tmp/seen_urls.txt", "w").close()
+        from database import _seen_urls
+        _seen_urls.clear()
+    except Exception as e:
+        logger.warning(f"[reset] Erreur vidage DB: {e}")
+    await update.message.reply_text(
+        "♻️ *Reset effectué*\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "✅ Curseur de scan remis à zéro\n"
+        "✅ Historique des articles effacé\n\n"
+        "_Le prochain scan repart de Hermès_",
+        parse_mode="Markdown"
+    )
 
 
 # ──────────────────────────────────────────
@@ -443,6 +459,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🏷️ /marques — Liste des maisons\n"
             "📊 /status — État du bot\n"
             "🔬 /test\\_sources — Diagnostic\n"
+            "♻️ /reset — Réinitialiser\n"
             "❓ /help — Aide complète",
             parse_mode="Markdown"
         )
@@ -468,6 +485,7 @@ def main():
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("chercher", cmd_chercher))
     app.add_handler(CommandHandler("test_sources", cmd_test_sources))
+    app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CallbackQueryHandler(button_callback))
 
     app.job_queue.run_repeating(
