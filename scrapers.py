@@ -101,12 +101,11 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 
         while offset < 200 and len(candidates) < max_articles * 3:
             params = {
-                "q": brand,
-                "filter": f"price:[{min_price}..{max_price}],currency:EUR",
-                "sort": "price",
-                "limit": limit,
-                "offset": offset,
-            }
+    "q": brand,
+    "sort": "newlyListed",
+    "limit": limit,
+    "offset": offset,
+}
             r = requests.get(
                 "https://api.ebay.com/buy/browse/v1/item_summary/search",
                 headers={
