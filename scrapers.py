@@ -104,8 +104,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 "q": brand,
                 "filter": (
                     f"price:[{min_price}..{max_price}],"
-                    f"currency:EUR,"
-                    f"deliveryCountry:FR"
+                    f"currency:EUR"
                 ),
                 "sort": "price",
                 "limit": limit,
@@ -235,7 +234,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 
         for page in range(1, 5):
             params = {
-                "search_text": brand,
+                "search_text": brand.replace(" ", "+"),
                 "price_from": min_price,
                 "price_to": max_price,
                 "currency": "EUR",
