@@ -1,4 +1,3 @@
-import os
 import requests
 import time
 import random
@@ -13,12 +12,7 @@ from ai_scorer import analyze_article
 logger = logging.getLogger(__name__)
 
 MAX_ARTICLES_PER_SOURCE = 10
-SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 
-
-# ──────────────────────────────────────────
-# PRIX
-# ──────────────────────────────────────────
 
 def parse_price(price_raw) -> float | None:
     try:
@@ -31,31 +25,14 @@ def parse_price(price_raw) -> float | None:
         return None
 
 def price_ok(price_raw) -> bool:
-    if isinstance(price_raw, dict):
-        parsed = parse_price(price_raw)
-        currency = price_raw.get("currency", "EUR")
-        if parsed is None:
-            return False
-        price_eur = parsed * 0.92 if currency == "USD" else parsed
-        return MIN_PRICE <= price_eur <= MAX_PRICE
     price = parse_price(price_raw)
     if price is None:
         return False
     return MIN_PRICE <= price <= MAX_PRICE
 
-
-# ──────────────────────────────────────────
-# HYPE
-# ──────────────────────────────────────────
-
 def is_hype(title: str, description: str = "") -> bool:
     text = (title + " " + description).lower()
     return any(kw.lower() in text for kw in HYPE_KEYWORDS)
-
-
-# ──────────────────────────────────────────
-# FILTRE MINIMAL
-# ──────────────────────────────────────────
 
 def is_relevant(title: str, brand: str) -> bool:
     if not title or not brand:
@@ -64,24 +41,10 @@ def is_relevant(title: str, brand: str) -> bool:
     if brand.lower() not in title_lower:
         return False
     hard_excludes = [
-        # Tech
+        "parfum", "perfume", "cologne", "eau de",
         "iphone", "samsung", "ordinateur", "laptop",
         "voiture", "moto", "vélo", "jouet", "toy",
         "livre", "book", "dvd",
-        # Parfums
-        "parfum", "perfume", "cologne", "eau de",
-        # Bijoux & accessoires
-        "collier", "necklace", "bracelet", "bague", "ring",
-        "montre", "watch", "bijou", "jewelry", "jewel",
-        "ceinture", "belt", "foulard", "scarf", "écharpe",
-        "lunettes", "sunglasses", "portefeuille", "wallet",
-        "chapeau", "hat", "gant", "glove",
-        # Chaussures
-        "chaussure", "shoe", "sneaker", "boot", "botte",
-        "mocassin", "loafer", "derby", "oxford", "basket",
-        # Vêtements non ciblés
-        "cravate", "tie", "chaussette", "sock",
-        "slip", "boxeur", "underwear",
     ]
     for kw in hard_excludes:
         if kw in title_lower:
@@ -125,24 +88,20 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
         while offset < 200 and len(candidates) < max_articles * 3:
             params = {
                 "q": brand,
-                "sort": "newlyListed",
+                "filter": f"price:[{min_price}..{max_price}],currency:EUR",
+                "sort": "price",
                 "limit": limit,
                 "offset": offset,
             }
             r = requests.get(
                 "https://api.ebay.com/buy/browse/v1/item_summary/search",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
-                },
+                headers={"Authorization": f"Bearer {token}"},
                 params=params,
                 timeout=15,
             )
             r.raise_for_status()
             data = r.json()
             items = data.get("itemSummaries", [])
-
-            logger.info(f"[eBay] offset={offset} → {len(items)} items bruts pour '{brand}'")
 
             if not items:
                 break
@@ -161,7 +120,7 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 break
             time.sleep(0.3)
 
-        logger.info(f"[eBay] {len(candidates)} candidats → Claude analyse {min(len(candidates), max_articles)}")
+        logger.info(f"[eBay] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
 
         for item in candidates[:max_articles]:
             title = item.get("title", "")
@@ -176,13 +135,13 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 source="eBay",
                 image_url=image_url if use_vision else None,
             )
-# Rejette les revendeurs professionnels
 
-if ai.get("is_reseller", False):
-    logger.info(f"[Source] Revendeur pro ignoré: {title[:50]}")
-    continue
             if not ai.get("keep", True):
                 logger.info(f"[eBay] Ignoré: {title[:50]}")
+                continue
+
+            if ai.get("is_reseller", False):
+                logger.info(f"[eBay] Revendeur pro ignoré: {title[:50]}")
                 continue
 
             results.append({
@@ -198,6 +157,8 @@ if ai.get("is_reseller", False):
                 "ai_verdict": ai.get("verdict", "correct"),
                 "ai_reason": ai.get("reason", ""),
                 "market_value": ai.get("market_value"),
+                "liquidity": ai.get("liquidity", "normale"),
+                "risk": ai.get("risk", "moyen"),
             })
 
         seen = set()
@@ -216,67 +177,62 @@ if ai.get("is_reseller", False):
 
 
 # ──────────────────────────────────────────
-# VINTED VIA SCRAPERAPI
+# VINTED
 # ──────────────────────────────────────────
+
+VINTED_SESSION = requests.Session()
+VINTED_SESSION.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://www.vinted.fr",
+    "Referer": "https://www.vinted.fr/",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+})
+
+def _vinted_init_session():
+    try:
+        VINTED_SESSION.get("https://www.vinted.fr", timeout=10, allow_redirects=True)
+        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
+        return True
+    except Exception as e:
+        logger.error(f"[Vinted] Init session: {e}")
+        return False
 
 def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                   max_articles=MAX_ARTICLES_PER_SOURCE):
     results = []
     candidates = []
-
-    if not SCRAPER_API_KEY:
-        logger.error("[Vinted] SCRAPER_API_KEY manquante")
-        return []
-
     try:
+        _vinted_init_session()
+
         for page in range(1, 5):
-            target_url = (
-                f"https://www.vinted.fr/api/v2/catalog/items"
-                f"?search_text={brand.replace(' ', '+')}"
-                f"&price_from={min_price}"
-                f"&price_to={max_price}"
-                f"&currency=EUR"
-                f"&per_page=50"
-                f"&page={page}"
-                f"&order=relevance"
+            params = {
+                "search_text": brand,
+                "price_from": min_price,
+                "price_to": max_price,
+                "currency": "EUR",
+                "per_page": 50,
+                "page": page,
+                "order": "relevance",
+            }
+            r = VINTED_SESSION.get(
+                "https://www.vinted.fr/api/v2/catalog/items",
+                params=params,
+                timeout=15,
             )
-
-            api_url = (
-                f"http://api.scraperapi.com"
-                f"?api_key={SCRAPER_API_KEY}"
-                f"&url={requests.utils.quote(target_url, safe='')}"
-                f"&country_code=fr"
-                f"&render=false"
-            )
-
-            try:
-                r = requests.get(api_url, timeout=60)
-                logger.info(
-                    f"[Vinted] ScraperAPI status={r.status_code} "
-                    f"page={page} pour '{brand}' "
-                    f"content-type={r.headers.get('content-type', '?')}"
-                )
-
-                if r.status_code != 200:
-                    logger.warning(f"[Vinted] Status {r.status_code}")
-                    break
-
-                if not r.text.strip():
-                    logger.warning(f"[Vinted] Réponse vide page {page}")
-                    break
-
-                # Vérifie que c'est bien du JSON
-                if "application/json" not in r.headers.get("content-type", ""):
-                    logger.warning(f"[Vinted] Réponse non-JSON: {r.text[:100]}")
-                    break
-
-                data = r.json()
-                items = data.get("items", [])
-                logger.info(f"[Vinted] page={page} → {len(items)} items bruts")
-
-            except Exception as e:
-                logger.error(f"[Vinted] Erreur page {page}: {e}")
-                break
+            r.raise_for_status()
+            items = r.json().get("items", [])
 
             if not items:
                 break
@@ -293,9 +249,9 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
             if len(candidates) >= max_articles * 3:
                 break
 
-            time.sleep(random.uniform(1.0, 2.0))
+            time.sleep(random.uniform(1.0, 1.5))
 
-        logger.info(f"[Vinted] {len(candidates)} candidats → Claude analyse {min(len(candidates), max_articles)}")
+        logger.info(f"[Vinted] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
 
         for item in candidates[:max_articles]:
             title = item.get("title", "")
@@ -318,6 +274,10 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 logger.info(f"[Vinted] Ignoré: {title[:50]}")
                 continue
 
+            if ai.get("is_reseller", False):
+                logger.info(f"[Vinted] Revendeur pro ignoré: {title[:50]}")
+                continue
+
             results.append({
                 "title": title,
                 "price": parsed_price,
@@ -331,6 +291,8 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 "ai_verdict": ai.get("verdict", "correct"),
                 "ai_reason": ai.get("reason", ""),
                 "market_value": ai.get("market_value"),
+                "liquidity": ai.get("liquidity", "normale"),
+                "risk": ai.get("risk", "moyen"),
             })
 
         seen = set()
