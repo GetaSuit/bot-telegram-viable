@@ -64,18 +64,25 @@ def is_relevant(title: str, brand: str) -> bool:
     if brand.lower() not in title_lower:
         return False
     hard_excludes = [
-    "parfum", "perfume", "cologne", "eau de",
-    "iphone", "samsung", "ordinateur", "laptop",
-    "voiture", "moto", "vélo", "jouet", "toy",
-    "livre", "book", "dvd",
-    # Bijoux et accessoires
-    "collier", "necklace", "bracelet", "bague", "ring",
-    "montre", "watch", "bijou", "jewelry", "jewel",
-    "ceinture", "belt", "foulard", "scarf", "écharpe",
-    "lunettes", "sunglasses", "portefeuille", "wallet",
-    "chapeau", "hat", "gant", "glove", "chaussure", "shoe",
-    "sneaker", "boot", "botte", "mocassin",
-]
+        # Tech
+        "iphone", "samsung", "ordinateur", "laptop",
+        "voiture", "moto", "vélo", "jouet", "toy",
+        "livre", "book", "dvd",
+        # Parfums
+        "parfum", "perfume", "cologne", "eau de",
+        # Bijoux & accessoires
+        "collier", "necklace", "bracelet", "bague", "ring",
+        "montre", "watch", "bijou", "jewelry", "jewel",
+        "ceinture", "belt", "foulard", "scarf", "écharpe",
+        "lunettes", "sunglasses", "portefeuille", "wallet",
+        "chapeau", "hat", "gant", "glove",
+        # Chaussures
+        "chaussure", "shoe", "sneaker", "boot", "botte",
+        "mocassin", "loafer", "derby", "oxford", "basket",
+        # Vêtements non ciblés
+        "cravate", "tie", "chaussette", "sock",
+        "slip", "boxeur", "underwear",
+    ]
     for kw in hard_excludes:
         if kw in title_lower:
             return False
@@ -208,17 +215,6 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 # VINTED VIA SCRAPERAPI
 # ──────────────────────────────────────────
 
-def _scraper_get(url: str, params: dict) -> requests.Response:
-    """Passe par ScraperAPI pour contourner le blocage IP de Vinted."""
-    target_url = url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
-    api_url = (
-        f"http://api.scraperapi.com"
-        f"?api_key={SCRAPER_API_KEY}"
-        f"&url={requests.utils.quote(target_url)}"
-        f"&country_code=fr"
-    )
-    return requests.get(api_url, timeout=30)
-
 def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                   max_articles=MAX_ARTICLES_PER_SOURCE):
     results = []
@@ -230,27 +226,44 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 
     try:
         for page in range(1, 5):
-            params = {
-                "search_text": brand.replace(" ", "+"),
-                "price_from": min_price,
-                "price_to": max_price,
-                "currency": "EUR",
-                "per_page": 50,
-                "page": page,
-                "order": "relevance",
-            }
+            target_url = (
+                f"https://www.vinted.fr/api/v2/catalog/items"
+                f"?search_text={brand.replace(' ', '+')}"
+                f"&price_from={min_price}"
+                f"&price_to={max_price}"
+                f"&currency=EUR"
+                f"&per_page=50"
+                f"&page={page}"
+                f"&order=relevance"
+            )
+
+            api_url = (
+                f"http://api.scraperapi.com"
+                f"?api_key={SCRAPER_API_KEY}"
+                f"&url={requests.utils.quote(target_url, safe='')}"
+                f"&country_code=fr"
+                f"&render=false"
+            )
+
             try:
-                r = _scraper_get(
-                    "https://www.vinted.fr/api/v2/catalog/items",
-                    params,
+                r = requests.get(api_url, timeout=60)
+                logger.info(
+                    f"[Vinted] ScraperAPI status={r.status_code} "
+                    f"page={page} pour '{brand}' "
+                    f"content-type={r.headers.get('content-type', '?')}"
                 )
-                logger.info(f"[Vinted] ScraperAPI status={r.status_code} page={page} pour '{brand}'")
 
                 if r.status_code != 200:
-                    logger.warning(f"[Vinted] Status {r.status_code} page {page}")
+                    logger.warning(f"[Vinted] Status {r.status_code}")
                     break
+
                 if not r.text.strip():
                     logger.warning(f"[Vinted] Réponse vide page {page}")
+                    break
+
+                # Vérifie que c'est bien du JSON
+                if "application/json" not in r.headers.get("content-type", ""):
+                    logger.warning(f"[Vinted] Réponse non-JSON: {r.text[:100]}")
                     break
 
                 data = r.json()
