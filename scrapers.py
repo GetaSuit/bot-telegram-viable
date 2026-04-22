@@ -1,3 +1,4 @@
+import os
 import requests
 import time
 import random
@@ -12,6 +13,7 @@ from ai_scorer import analyze_article
 logger = logging.getLogger(__name__)
 
 MAX_ARTICLES_PER_SOURCE = 10
+SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 
 
 # ──────────────────────────────────────────
@@ -34,7 +36,6 @@ def price_ok(price_raw) -> bool:
         currency = price_raw.get("currency", "EUR")
         if parsed is None:
             return False
-        # Conversion USD → EUR
         price_eur = parsed * 0.92 if currency == "USD" else parsed
         return MIN_PRICE <= price_eur <= MAX_PRICE
     price = parse_price(price_raw)
@@ -108,7 +109,6 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
         limit = 50
 
         while offset < 200 and len(candidates) < max_articles * 3:
-            # Pas de filtre prix dans l'API — filtrage côté Python
             params = {
                 "q": brand,
                 "sort": "newlyListed",
@@ -198,50 +198,30 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 
 
 # ──────────────────────────────────────────
-# VINTED
+# VINTED VIA SCRAPERAPI
 # ──────────────────────────────────────────
 
-VINTED_SESSION = requests.Session()
-VINTED_SESSION.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin": "https://www.vinted.fr",
-    "Referer": "https://www.vinted.fr/",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-})
-
-def _vinted_init_session():
-    try:
-        VINTED_SESSION.get("https://www.vinted.fr", timeout=10, allow_redirects=True)
-        time.sleep(1)
-        VINTED_SESSION.get("https://www.vinted.fr/catalog", timeout=10)
-        time.sleep(1)
-        return True
-    except Exception as e:
-        logger.error(f"[Vinted] Init session: {e}")
-        return False
+def _scraper_get(url: str, params: dict) -> requests.Response:
+    """Passe par ScraperAPI pour contourner le blocage IP de Vinted."""
+    target_url = url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    api_url = (
+        f"http://api.scraperapi.com"
+        f"?api_key={SCRAPER_API_KEY}"
+        f"&url={requests.utils.quote(target_url)}"
+        f"&country_code=fr"
+    )
+    return requests.get(api_url, timeout=30)
 
 def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                   max_articles=MAX_ARTICLES_PER_SOURCE):
     results = []
     candidates = []
-    try:
-        ok = _vinted_init_session()
-        if not ok:
-            logger.error("[Vinted] Session non initialisée")
-            return []
 
+    if not SCRAPER_API_KEY:
+        logger.error("[Vinted] SCRAPER_API_KEY manquante")
+        return []
+
+    try:
         for page in range(1, 5):
             params = {
                 "search_text": brand.replace(" ", "+"),
@@ -253,20 +233,23 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 "order": "relevance",
             }
             try:
-                r = VINTED_SESSION.get(
+                r = _scraper_get(
                     "https://www.vinted.fr/api/v2/catalog/items",
-                    params=params,
-                    timeout=15,
+                    params,
                 )
-                if r.status_code == 403:
-                    logger.warning(f"[Vinted] 403 — session bloquée page {page}")
+                logger.info(f"[Vinted] ScraperAPI status={r.status_code} page={page} pour '{brand}'")
+
+                if r.status_code != 200:
+                    logger.warning(f"[Vinted] Status {r.status_code} page {page}")
                     break
                 if not r.text.strip():
                     logger.warning(f"[Vinted] Réponse vide page {page}")
                     break
-                r.raise_for_status()
-                items = r.json().get("items", [])
-                logger.info(f"[Vinted] page={page} → {len(items)} items bruts pour '{brand}'")
+
+                data = r.json()
+                items = data.get("items", [])
+                logger.info(f"[Vinted] page={page} → {len(items)} items bruts")
+
             except Exception as e:
                 logger.error(f"[Vinted] Erreur page {page}: {e}")
                 break
@@ -286,7 +269,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
             if len(candidates) >= max_articles * 3:
                 break
 
-            time.sleep(random.uniform(2.0, 3.0))
+            time.sleep(random.uniform(1.0, 2.0))
 
         logger.info(f"[Vinted] {len(candidates)} candidats → Claude analyse {min(len(candidates), max_articles)}")
 
