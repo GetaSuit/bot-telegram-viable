@@ -104,7 +104,8 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 "q": brand,
                 "filter": (
                     f"price:[{min_price}..{max_price}],"
-                    f"currency:EUR"
+                    f"currency:EUR,"
+                    f"deliveryCountry:FR"
                 ),
                 "sort": "price",
                 "limit": limit,
@@ -214,7 +215,9 @@ VINTED_SESSION.headers.update({
 def _vinted_init_session():
     try:
         VINTED_SESSION.get("https://www.vinted.fr", timeout=10, allow_redirects=True)
-        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
+        time.sleep(1)
+        VINTED_SESSION.get("https://www.vinted.fr/catalog", timeout=10)
+        time.sleep(1)
         return True
     except Exception as e:
         logger.error(f"[Vinted] Init session: {e}")
@@ -225,7 +228,10 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
     results = []
     candidates = []
     try:
-        _vinted_init_session()
+        ok = _vinted_init_session()
+        if not ok:
+            logger.error("[Vinted] Session non initialisée")
+            return []
 
         for page in range(1, 5):
             params = {
@@ -237,13 +243,23 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 "page": page,
                 "order": "relevance",
             }
-            r = VINTED_SESSION.get(
-                "https://www.vinted.fr/api/v2/catalog/items",
-                params=params,
-                timeout=15,
-            )
-            r.raise_for_status()
-            items = r.json().get("items", [])
+            try:
+                r = VINTED_SESSION.get(
+                    "https://www.vinted.fr/api/v2/catalog/items",
+                    params=params,
+                    timeout=15,
+                )
+                if r.status_code == 403:
+                    logger.warning(f"[Vinted] 403 — session bloquée page {page}")
+                    break
+                if not r.text.strip():
+                    logger.warning(f"[Vinted] Réponse vide page {page}")
+                    break
+                r.raise_for_status()
+                items = r.json().get("items", [])
+            except Exception as e:
+                logger.error(f"[Vinted] Erreur page {page}: {e}")
+                break
 
             if not items:
                 break
@@ -260,7 +276,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
             if len(candidates) >= max_articles * 3:
                 break
 
-            time.sleep(random.uniform(1.0, 1.5))
+            time.sleep(random.uniform(2.0, 3.0))
 
         logger.info(f"[Vinted] {len(candidates)} candidats → Claude analyse {min(len(candidates), max_articles)}")
 
