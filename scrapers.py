@@ -176,7 +176,11 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 source="eBay",
                 image_url=image_url if use_vision else None,
             )
+# Rejette les revendeurs professionnels
 
+if ai.get("is_reseller", False):
+    logger.info(f"[Source] Revendeur pro ignoré: {title[:50]}")
+    continue
             if not ai.get("keep", True):
                 logger.info(f"[eBay] Ignoré: {title[:50]}")
                 continue
