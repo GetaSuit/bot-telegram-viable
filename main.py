@@ -188,7 +188,11 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
 
     for brand in batch:
         try:
-            results = search_all_sources(brand)
+            # Lance la recherche dans un thread séparé pour ne pas bloquer
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None, search_all_sources, brand
+            )
             new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
             for item in new_items[:MAX_PER_BRAND]:
                 url = item.get("url", "")
@@ -196,10 +200,10 @@ async def scan_job(context: ContextTypes.DEFAULT_TYPE):
                     mark_as_seen(url)
                 await send_article(context.bot, item, brand)
                 total_sent += 1
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[scan_job] Erreur '{brand}': {e}")
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
     logger.info(f"✅ Batch terminé — {total_sent} articles envoyés")
 
