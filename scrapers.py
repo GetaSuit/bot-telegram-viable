@@ -64,11 +64,18 @@ def is_relevant(title: str, brand: str) -> bool:
     if brand.lower() not in title_lower:
         return False
     hard_excludes = [
-        "parfum", "perfume", "cologne", "eau de",
-        "iphone", "samsung", "ordinateur", "laptop",
-        "voiture", "moto", "vélo", "jouet", "toy",
-        "livre", "book", "dvd",
-    ]
+    "parfum", "perfume", "cologne", "eau de",
+    "iphone", "samsung", "ordinateur", "laptop",
+    "voiture", "moto", "vélo", "jouet", "toy",
+    "livre", "book", "dvd",
+    # Bijoux et accessoires
+    "collier", "necklace", "bracelet", "bague", "ring",
+    "montre", "watch", "bijou", "jewelry", "jewel",
+    "ceinture", "belt", "foulard", "scarf", "écharpe",
+    "lunettes", "sunglasses", "portefeuille", "wallet",
+    "chapeau", "hat", "gant", "glove", "chaussure", "shoe",
+    "sneaker", "boot", "botte", "mocassin",
+]
     for kw in hard_excludes:
         if kw in title_lower:
             return False
