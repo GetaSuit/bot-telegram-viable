@@ -35,36 +35,68 @@ def analyze_article(
     if not ANTHROPIC_API_KEY:
         return _default_response()
 
-    prompt = f"""Tu es un expert en mode luxe et sourcing de seconde main.
+    prompt = f"""Tu es une fusion de trois experts au service d'un revendeur de mode luxe :
 
-Article sur {source} :
+🎩 COLLECTIONNEUR — Tu connais par cœur chaque collection, chaque défilé, chaque pièce iconique de chaque maison de couture depuis leur création. Tu reconnais une pièce Dior Bar Jacket de 1947 comme une veste Gucci Tom Ford FW2003. Tu sais quelles pièces sont rares, recherchées, cultes.
+
+📊 ANALYSTE DE MARCHÉ — Tu surveilles en temps réel les prix sur Vestiaire Collective, The RealReal, eBay international, Chrono24, et les ventes aux enchères Sotheby's/Christie's. Tu connais la liquidité de chaque pièce, les tendances d'achat, les pics de demande liés aux actualités mode.
+
+💼 ENTREPRENEUR — Tu penses rentabilité, rotation de stock, marge nette, risque. Tu évalues chaque article comme un investissement : peut-on revendre vite ? À quel prix ? Y a-t-il une demande réelle ? Le profit justifie-t-il l'achat ?
+
+---
+
+Article trouvé sur {source} :
 - Marque : {brand}
 - Titre : {title}
-- Prix : {price}€
+- Prix demandé : {price}€
 
-RÈGLE PRINCIPALE : keep doit être TRUE par défaut.
-Mets keep à FALSE UNIQUEMENT si l'article est :
-- Une contrefaçon évidente (fake, replica, inspired)
-- Un parfum ou produit beauté
-- Un article technologique (téléphone, ordi)
-- Totalement hors-sujet (voiture, jouet, livre)
+---
 
-Pour TOUT le reste (vêtements, accessoires, sacs, même si pas parfait) → keep = TRUE
+TON ANALYSE EN 3 ÉTAPES :
 
-Analyse aussi :
-- Est-ce une pièce de défilé ou collection connue ?
-- Quelle est la valeur marché estimée ?
+1. IDENTIFICATION (Collectionneur) :
+   - Quelle pièce est-ce exactement ?
+   - De quelle collection/année/créateur ?
+   - Est-ce iconique, rare, recherché par les collectionneurs ?
+   - Si image fournie : analyse visuelle complète, compare aux archives
 
-Réponds UNIQUEMENT en JSON :
+2. ÉVALUATION MARCHÉ (Analyste) :
+   - Prix de revente réaliste sur Vestiaire/RealReal/eBay aujourd'hui
+   - Liquidité : se vend-il vite ou ça stagne ?
+   - Tendance : la demande monte, stable ou baisse ?
+   - Risque d'authentification ou de retour ?
+
+3. DÉCISION BUSINESS (Entrepreneur) :
+   - Marge nette réaliste après commission plateforme (~15%)
+   - Délai de revente estimé
+   - Verdict final : acheter ou passer ?
+
+---
+
+CRITÈRES POUR keep=true :
+✅ Marge nette ≥ 40% après commission
+✅ Pièce reconnaissable et demandée
+✅ Prix d'achat cohérent avec le marché
+✅ Liquidité bonne ou excellente
+
+CRITÈRES POUR keep=false :
+❌ Marge insuffisante ou nulle
+❌ Pièce trop commune, saturée sur le marché
+❌ Doute sur l'authenticité
+❌ Catégorie hors-sujet (parfum, tech, etc.)
+
+Réponds UNIQUEMENT en JSON valide sans texte autour :
 {{
-  "keep": <true SAUF si contrefaçon/parfum/tech/hors-sujet>,
-  "is_trending": <true si tendance 2024-2026>,
-  "is_authentic": <true si pas de doute évident>,
-  "is_runway": <true si photo ou pièce de défilé>,
-  "collection": <"Marque Saison Année" ex "Dior SS24" ou null>,
-  "verdict": <"excellent" | "bon" | "correct" | "faible">,
-  "reason": <une phrase courte>,
-  "market_value": <valeur revente estimée en euros ou null>
+  "keep": <true ou false>,
+  "is_trending": <true si demande en hausse actuellement>,
+  "is_authentic": <true si semble authentique>,
+  "is_runway": <true si pièce ou photo de défilé identifiée>,
+  "collection": <collection précise ex "Tom Ford pour Gucci FW2003" ou null>,
+  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,
+  "reason": <une phrase synthétisant les 3 angles : identification + marché + business>,
+  "market_value": <prix de revente réaliste en euros ou null>,
+  "liquidity": <"rapide" | "normale" | "lente">,
+  "risk": <"faible" | "moyen" | "élevé">
 }}"""
 
     content = []
@@ -80,6 +112,7 @@ Réponds UNIQUEMENT en JSON :
                     "data": img_b64,
                 },
             })
+            logger.info(f"[AI] Vision activée: {title[:40]}")
 
     content.append({"type": "text", "text": prompt})
 
@@ -93,7 +126,7 @@ Réponds UNIQUEMENT en JSON :
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 400,
+                "max_tokens": 500,
                 "messages": [{"role": "user", "content": content}],
             },
             timeout=30,
@@ -106,12 +139,13 @@ Réponds UNIQUEMENT en JSON :
         text = response.json()["content"][0]["text"].strip()
         text = text.replace("```json", "").replace("```", "").strip()
         result = json.loads(text)
+
         logger.info(
             f"[AI] {brand} — keep={result.get('keep')} | "
             f"{result.get('verdict')} | "
-            f"runway={result.get('is_runway')} | "
-            f"collection={result.get('collection')} | "
-            f"{result.get('reason', '')[:50]}"
+            f"marge cible={result.get('market_value')}€ | "
+            f"liquidité={result.get('liquidity')} | "
+            f"{result.get('reason', '')[:60]}"
         )
         return result
 
@@ -124,7 +158,6 @@ Réponds UNIQUEMENT en JSON :
 
 
 def _default_response() -> dict:
-    """Par défaut on garde l'article si l'IA est indisponible."""
     return {
         "keep": True,
         "is_trending": False,
@@ -134,4 +167,6 @@ def _default_response() -> dict:
         "verdict": "correct",
         "reason": "",
         "market_value": None,
+        "liquidity": "normale",
+        "risk": "moyen",
     }
