@@ -29,6 +29,14 @@ def parse_price(price_raw) -> float | None:
         return None
 
 def price_ok(price_raw) -> bool:
+    if isinstance(price_raw, dict):
+        parsed = parse_price(price_raw)
+        currency = price_raw.get("currency", "EUR")
+        if parsed is None:
+            return False
+        # Conversion USD → EUR
+        price_eur = parsed * 0.92 if currency == "USD" else parsed
+        return MIN_PRICE <= price_eur <= MAX_PRICE
     price = parse_price(price_raw)
     if price is None:
         return False
@@ -100,20 +108,18 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
         limit = 50
 
         while offset < 200 and len(candidates) < max_articles * 3:
+            # Pas de filtre prix dans l'API — filtrage côté Python
             params = {
-    "q": brand,
-    "sort": "newlyListed",
-    "limit": limit,
-    "offset": offset,
-}
+                "q": brand,
+                "sort": "newlyListed",
+                "limit": limit,
+                "offset": offset,
+            }
             r = requests.get(
                 "https://api.ebay.com/buy/browse/v1/item_summary/search",
                 headers={
                     "Authorization": f"Bearer {token}",
                     "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
-                    "X-EBAY-C-ENDUSERCTX": "contextualLocation=country=FR,zip=75001",
-                    "Accept-Language": "fr-FR",
-                    "Content-Language": "fr-FR",
                 },
                 params=params,
                 timeout=15,
@@ -260,6 +266,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                     break
                 r.raise_for_status()
                 items = r.json().get("items", [])
+                logger.info(f"[Vinted] page={page} → {len(items)} items bruts pour '{brand}'")
             except Exception as e:
                 logger.error(f"[Vinted] Erreur page {page}: {e}")
                 break
