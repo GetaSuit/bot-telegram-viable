@@ -4,6 +4,7 @@ import time
 import random
 import logging
 import json
+import re
 from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
     HYPE_KEYWORDS,
@@ -94,7 +95,6 @@ VINTED_SESSION.headers.update({
 
 def _vinted_init_session():
     try:
-        # Étape 1 — visite la page principale
         r1 = VINTED_SESSION.get(
             "https://www.vinted.fr",
             timeout=10,
@@ -102,8 +102,6 @@ def _vinted_init_session():
         )
         logger.info(f"[Vinted] Init step 1: {r1.status_code}")
         time.sleep(2)
-
-        # Étape 2 — simule une recherche pour activer les cookies
         r2 = VINTED_SESSION.get(
             "https://www.vinted.fr/vetements?search_text=veste",
             timeout=10,
@@ -227,13 +225,13 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 
 
 # ──────────────────────────────────────────
-# VESTIAIRE COLLECTIVE (via ScrapFly)
+# VESTIAIRE COLLECTIVE
 # ──────────────────────────────────────────
 
 def search_vestiaire(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                      max_articles=MAX_ARTICLES_PER_SOURCE):
     if not SCRAPFLY_KEY:
-        logger.warning("[VC] SCRAPFLY_KEY manquante — Vestiaire désactivé")
+        logger.warning("[VC] SCRAPFLY_KEY manquante")
         return []
 
     results = []
@@ -241,7 +239,6 @@ def search_vestiaire(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 
     try:
         for page in range(1, 4):
-            # URL de recherche Vestiaire Collective
             vc_url = (
                 f"https://www.vestiairecollective.com/search/"
                 f"?q={brand.replace(' ', '+')}"
@@ -266,46 +263,35 @@ def search_vestiaire(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 logger.warning(f"[VC] ScrapFly status {r.status_code}")
                 break
 
-            data = r.json()
-            html = data.get("result", {}).get("content", "")
-
+            html = r.json().get("result", {}).get("content", "")
             if not html:
                 logger.warning(f"[VC] Contenu vide page {page}")
                 break
 
-            # Extraction du JSON __NEXT_DATA__
-            import re
-            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            match = re.search(
+                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+                html, re.DOTALL
+            )
             if not match:
                 logger.warning(f"[VC] __NEXT_DATA__ introuvable page {page}")
                 break
 
             try:
                 next_data = json.loads(match.group(1))
-                # Navigation dans la structure JSON de Vestiaire
-               # Essaie plusieurs structures possibles
-items = []
-page_props = next_data.get("props", {}).get("pageProps", {})
+                page_props = next_data.get("props", {}).get("pageProps", {})
 
-# Structure 1
-items = page_props.get("initialData", {}).get("items", [])
+                logger.info(f"[VC] pageProps keys: {list(page_props.keys())[:10]}")
 
-# Structure 2
-if not items:
-    items = page_props.get("search", {}).get("items", [])
+                items = page_props.get("initialData", {}).get("items", [])
+                if not items:
+                    items = page_props.get("search", {}).get("items", [])
+                if not items:
+                    items = page_props.get("products", [])
+                if not items:
+                    catalog = page_props.get("catalog", {})
+                    items = catalog.get("items", catalog.get("products", []))
 
-# Structure 3
-if not items:
-    items = page_props.get("products", [])
-
-# Structure 4 — catalogue
-if not items:
-    catalog = page_props.get("catalog", {})
-    items = catalog.get("items", catalog.get("products", []))
-
-# Log pour debug
-logger.info(f"[VC] pageProps keys: {list(page_props.keys())[:10]}")
-logger.info(f"[VC] Items trouvés: {len(items)}")
+                logger.info(f"[VC] Items trouvés: {len(items)}")
 
             except Exception as e:
                 logger.warning(f"[VC] Parsing JSON: {e}")
@@ -316,33 +302,35 @@ logger.info(f"[VC] Items trouvés: {len(items)}")
                 break
 
             for item in items:
-                # Prix Vestiaire
-                price_raw = (
-                    item.get("price", {}).get("cents", 0) / 100
-                    if isinstance(item.get("price"), dict)
-                    else item.get("price")
-                )
+                try:
+                    price_obj = item.get("price", {})
+                    if isinstance(price_obj, dict):
+                        price_raw = price_obj.get("cents", 0) / 100
+                    else:
+                        price_raw = price_obj
 
-                if not price_raw or not price_ok(price_raw):
+                    if not price_raw or not price_ok(price_raw):
+                        continue
+
+                    title = item.get("name", "") or item.get("title", "")
+                    if not is_relevant(title, brand):
+                        continue
+
+                    link = item.get("link", item.get("url", ""))
+                    image = None
+                    if item.get("pictures"):
+                        image = item["pictures"][0].get("url")
+                    elif item.get("picture"):
+                        image = item["picture"].get("url")
+
+                    candidates.append({
+                        "title": title,
+                        "price": parse_price(price_raw),
+                        "url": "https://www.vestiairecollective.com" + link if link.startswith("/") else link,
+                        "image": image,
+                    })
+                except Exception:
                     continue
-
-                title = item.get("name", "") or item.get("title", "")
-                if not is_relevant(title, brand):
-                    continue
-
-                candidates.append({
-                    "title": title,
-                    "price": parse_price(price_raw),
-                    "url": (
-                        "https://www.vestiairecollective.com"
-                        + item.get("link", item.get("url", ""))
-                    ),
-                    "image": (
-                        item.get("pictures", [{}])[0].get("url")
-                        if item.get("pictures")
-                        else item.get("picture", {}).get("url")
-                    ),
-                })
 
             if len(candidates) >= max_articles * 3:
                 break
