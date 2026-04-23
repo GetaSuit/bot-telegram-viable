@@ -577,8 +577,12 @@ def main():
             app.add_handler(CommandHandler("test_sources", cmd_test_sources))
             app.add_handler(CallbackQueryHandler(button_callback))
 
-            import asyncio as _asyncio
-            _asyncio.get_event_loop().run_until_complete(setup_commands(app))
+           app = (
+    Application.builder()
+    .token(TELEGRAM_TOKEN)
+    .post_init(setup_commands)
+    .build()
+)
 
             logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Vinted + Vestiaire | IA Claude")
 
