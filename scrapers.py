@@ -102,8 +102,12 @@ def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
         while offset < 200 and len(candidates) < max_articles * 3:
             params = {
                 "q": brand,
-                "filter": f"price:[{min_price}..{max_price}],currency:EUR",
-                "sort": "price",
+                "filter": (
+                    f"price:[{min_price}..{max_price}],"
+                    f"currency:EUR,"
+                    f"deliveryCountry:FR"
+                ),
+                "sort": "newlyListed",
                 "limit": limit,
                 "offset": offset,
             }
@@ -216,8 +220,26 @@ VINTED_SESSION.headers.update({
 
 def _vinted_init_session():
     try:
-        VINTED_SESSION.get("https://www.vinted.fr", timeout=10, allow_redirects=True)
-        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
+        headers_init = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "fr-FR,fr;q=0.9",
+        }
+        VINTED_SESSION.get(
+            "https://www.vinted.fr",
+            headers=headers_init,
+            timeout=10,
+            allow_redirects=True,
+        )
+        time.sleep(1)
+        VINTED_SESSION.get(
+            "https://www.vinted.fr/api/v2/configurations",
+            timeout=10,
+        )
         return True
     except Exception as e:
         logger.error(f"[Vinted] Init session: {e}")
@@ -245,8 +267,21 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 params=params,
                 timeout=15,
             )
-            r.raise_for_status()
-            items = r.json().get("items", [])
+
+            if r.status_code == 403:
+                logger.warning(f"[Vinted] 403 — session expirée, réinitialisation")
+                _vinted_init_session()
+                break
+
+            if r.status_code != 200:
+                logger.warning(f"[Vinted] Status {r.status_code} page {page}")
+                break
+
+            try:
+                items = r.json().get("items", [])
+            except Exception:
+                logger.warning(f"[Vinted] Réponse vide page {page}")
+                break
 
             if not items:
                 break
