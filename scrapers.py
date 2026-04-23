@@ -94,18 +94,23 @@ VINTED_SESSION.headers.update({
 
 def _vinted_init_session():
     try:
-        VINTED_SESSION.get(
+        # Étape 1 — visite la page principale
+        r1 = VINTED_SESSION.get(
             "https://www.vinted.fr",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "fr-FR,fr;q=0.9",
-            },
             timeout=10,
             allow_redirects=True,
         )
+        logger.info(f"[Vinted] Init step 1: {r1.status_code}")
+        time.sleep(2)
+
+        # Étape 2 — simule une recherche pour activer les cookies
+        r2 = VINTED_SESSION.get(
+            "https://www.vinted.fr/vetements?search_text=veste",
+            timeout=10,
+            allow_redirects=True,
+        )
+        logger.info(f"[Vinted] Init step 2: {r2.status_code}")
         time.sleep(1)
-        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
         return True
     except Exception as e:
         logger.error(f"[Vinted] Init session: {e}")
@@ -278,23 +283,29 @@ def search_vestiaire(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
             try:
                 next_data = json.loads(match.group(1))
                 # Navigation dans la structure JSON de Vestiaire
-                items = (
-                    next_data
-                    .get("props", {})
-                    .get("pageProps", {})
-                    .get("initialData", {})
-                    .get("items", [])
-                )
+               # Essaie plusieurs structures possibles
+items = []
+page_props = next_data.get("props", {}).get("pageProps", {})
 
-                if not items:
-                    # Essai structure alternative
-                    items = (
-                        next_data
-                        .get("props", {})
-                        .get("pageProps", {})
-                        .get("search", {})
-                        .get("items", [])
-                    )
+# Structure 1
+items = page_props.get("initialData", {}).get("items", [])
+
+# Structure 2
+if not items:
+    items = page_props.get("search", {}).get("items", [])
+
+# Structure 3
+if not items:
+    items = page_props.get("products", [])
+
+# Structure 4 — catalogue
+if not items:
+    catalog = page_props.get("catalog", {})
+    items = catalog.get("items", catalog.get("products", []))
+
+# Log pour debug
+logger.info(f"[VC] pageProps keys: {list(page_props.keys())[:10]}")
+logger.info(f"[VC] Items trouvés: {len(items)}")
 
             except Exception as e:
                 logger.warning(f"[VC] Parsing JSON: {e}")
