@@ -47,27 +47,30 @@ def analyze_article(
         f"- Prix demandé : {price}€\n\n"
         f"---\n\n"
         f"RÈGLE ABSOLUE — CE QUE TU CHERCHES :\n"
-        f"Un particulier qui ne connaît pas la vraie valeur de sa pièce et la vend bien en dessous du marché.\n\n"
-        f"REJETTE IMMÉDIATEMENT si :\n"
-f"❌ Le profit net est clairement nul ou négatif\n"
-f"❌ Le prix demandé est déjà au prix du marché ou au dessus\n"
-f"❌ Contrefaçon évidente (qualité médiocre, orthographe suspecte)\n"
-f"❌ Catégorie hors-sujet : parfum, chaussures, tech, livres\n\n"
-f"ATTENTION : Ne rejette PAS systématiquement les grandes marques comme Dior, Hermès, Chanel — "
-f"même si le vendeur semble informé, garde l'article si la marge est réelle.\n"
-        f"GARDE UNIQUEMENT si :\n"
-        f"✅ Le vendeur semble être un particulier qui sous-estime sa pièce\n"
-        f"✅ Titre simple sans jargon pro\n"
-        f"✅ Profit net réaliste ≥ 50€ après commission 15%\n"
-        f"✅ Catégorie ciblée : veste, blazer, costume, manteau, sac\n\n"
+        f"Un article de luxe vendu en dessous de sa valeur réelle sur le marché secondaire.\n\n"
+        f"REJETTE UNIQUEMENT si :\n"
+        f"❌ Le profit net est clairement nul ou négatif\n"
+        f"❌ Le prix demandé est déjà au prix du marché ou au dessus\n"
+        f"❌ Contrefaçon évidente\n"
+        f"❌ Catégorie hors-sujet : parfum, chaussures, tech, livres, accessoires\n\n"
+        f"GARDE si :\n"
+        f"✅ L'article vaut significativement plus que le prix demandé\n"
+        f"✅ Profit net réaliste ≥ 40€ après commission 15%\n"
+        f"✅ Catégorie ciblée : veste, blazer, costume, manteau, sac\n"
+        f"✅ Même les grandes marques comme Dior, Hermès, Chanel — "
+        f"si la marge est réelle, garde l'article\n\n"
+        f"ANALYSE EN 3 ÉTAPES :\n"
+        f"1. Quelle est la vraie valeur marché de cette pièce aujourd'hui ?\n"
+        f"2. Y a-t-il une vraie opportunité de marge ?\n"
+        f"3. La pièce appartient-elle à une collection identifiable ?\n\n"
         f"Réponds UNIQUEMENT en JSON valide sans texte autour :\n"
         f"{{\n"
         f'  "keep": <true ou false>,\n'
         f'  "is_trending": <true si tendance 2024-2026>,\n'
         f'  "is_authentic": <true si semble authentique>,\n'
         f'  "is_runway": <true si pièce de défilé identifiée>,\n'
-        f'  "is_reseller": <true si vendeur professionnel détecté>,\n'
-        f'  "collection": <collection identifiée ou null>,\n'
+        f'  "is_reseller": <true si revendeur pro évident avec prix déjà au marché>,\n'
+        f'  "collection": <collection identifiée ex "Dior FW2023" ou null>,\n'
         f'  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,\n'
         f'  "reason": <une phrase courte>,\n'
         f'  "market_value": <valeur marché réelle en euros ou null>,\n'
@@ -89,6 +92,7 @@ f"même si le vendeur semble informé, garde l'article si la marge est réelle.\
                     "data": img_b64,
                 },
             })
+            logger.info(f"[AI] Vision activée: {title[:40]}")
 
     content.append({"type": "text", "text": prompt})
 
@@ -118,7 +122,6 @@ f"même si le vendeur semble informé, garde l'article si la marge est réelle.\
 
         logger.info(
             f"[AI] {brand} — keep={result.get('keep')} | "
-            f"reseller={result.get('is_reseller')} | "
             f"{result.get('verdict')} | "
             f"market={result.get('market_value')}€ | "
             f"{result.get('reason', '')[:50]}"
