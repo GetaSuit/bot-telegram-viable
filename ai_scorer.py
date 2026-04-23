@@ -36,44 +36,23 @@ def analyze_article(
         return _default_response()
 
     prompt = (
-        f"Tu es une fusion de trois experts au service d'un revendeur de mode luxe :\n\n"
-        f"🎩 COLLECTIONNEUR — Tu connais chaque collection, défilé et pièce iconique de chaque maison depuis leur création.\n"
-        f"📊 ANALYSTE — Tu surveilles les prix réels sur Vestiaire Collective, The RealReal, eBay international.\n"
-        f"💼 ENTREPRENEUR — Tu penses marge nette, rotation rapide, risque minimal.\n\n"
-        f"---\n\n"
+        f"Tu es un expert en revente de mode luxe.\n\n"
         f"Article trouvé sur {source} :\n"
         f"- Marque : {brand}\n"
         f"- Titre : {title}\n"
         f"- Prix demandé : {price}€\n\n"
-        f"---\n\n"
-        f"RÈGLE ABSOLUE — CE QUE TU CHERCHES :\n"
-        f"Un article de luxe vendu en dessous de sa valeur réelle sur le marché secondaire.\n\n"
-        f"REJETTE UNIQUEMENT si :\n"
-        f"❌ Le profit net est clairement nul ou négatif\n"
-        f"❌ Le prix demandé est déjà au prix du marché ou au dessus\n"
-        f"❌ Contrefaçon évidente\n"
-        f"❌ Catégorie hors-sujet : parfum, chaussures, tech, livres, accessoires\n\n"
-        f"GARDE si :\n"
-        f"✅ L'article vaut significativement plus que le prix demandé\n"
-        f"✅ Profit net réaliste ≥ 40€ après commission 15%\n"
-        f"✅ Catégorie ciblée : veste, blazer, costume, manteau, sac\n"
-        f"✅ Même les grandes marques comme Dior, Hermès, Chanel — "
-        f"si la marge est réelle, garde l'article\n\n"
-        f"ANALYSE EN 3 ÉTAPES :\n"
-        f"1. Quelle est la vraie valeur marché de cette pièce aujourd'hui ?\n"
-        f"2. Y a-t-il une vraie opportunité de marge ?\n"
-        f"3. La pièce appartient-elle à une collection identifiable ?\n\n"
-        f"Réponds UNIQUEMENT en JSON valide sans texte autour :\n"
+        f"Question unique : Est-ce qu'acheter cet article à {price}€ "
+        f"permet de le revendre avec un profit intéressant ?\n\n"
+        f"Réponds UNIQUEMENT en JSON valide :\n"
         f"{{\n"
-        f'  "keep": <true ou false>,\n'
-        f'  "is_trending": <true si tendance 2024-2026>,\n'
+        f'  "keep": <true si profitable, false sinon>,\n'
+        f'  "is_trending": <true si pièce tendance en 2025/2026>,\n'
         f'  "is_authentic": <true si semble authentique>,\n'
-        f'  "is_runway": <true si pièce de défilé identifiée>,\n'
-        f'  "is_reseller": <true si revendeur pro évident avec prix déjà au marché>,\n'
-        f'  "collection": <collection identifiée ex "Dior FW2023" ou null>,\n'
+        f'  "is_runway": <true si pièce de défilé identifiable>,\n'
+        f'  "collection": <collection identifiée ou null>,\n'
         f'  "verdict": <"excellent" | "bon" | "correct" | "faible" | "suspect">,\n'
-        f'  "reason": <une phrase courte>,\n'
-        f'  "market_value": <valeur marché réelle en euros ou null>,\n'
+        f'  "reason": <une phrase courte sur la rentabilité>,\n'
+        f'  "market_value": <prix de revente réaliste en euros ou null>,\n'
         f'  "liquidity": <"rapide" | "normale" | "lente">,\n'
         f'  "risk": <"faible" | "moyen" | "élevé">\n'
         f"}}"
@@ -92,7 +71,6 @@ def analyze_article(
                     "data": img_b64,
                 },
             })
-            logger.info(f"[AI] Vision activée: {title[:40]}")
 
     content.append({"type": "text", "text": prompt})
 
@@ -106,7 +84,7 @@ def analyze_article(
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 500,
+                "max_tokens": 400,
                 "messages": [{"role": "user", "content": content}],
             },
             timeout=30,
@@ -142,7 +120,6 @@ def _default_response() -> dict:
         "is_trending": False,
         "is_authentic": True,
         "is_runway": False,
-        "is_reseller": False,
         "collection": None,
         "verdict": "correct",
         "reason": "",
