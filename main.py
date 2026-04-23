@@ -1,4 +1,4 @@
-"""
+²"""
 main.py — Bot Telegram sourcing luxe @BigbigMoneyluxbot
 python-telegram-bot 20.6 | Render.com
 """
@@ -229,7 +229,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Chaque article est analysé par Claude :\n"
         "cote réelle · collections · archives · profit\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 *Sources* : eBay · Vinted\n"
+       f"📦 *Source* : Vinted\n"
         f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ *Marques* : {len(BRANDS)} maisons surveillées\n"
         f"🔁 *Scan auto* : toutes les {SCAN_INTERVAL_MINUTES // 60}h\n"
