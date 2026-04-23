@@ -116,43 +116,52 @@ def _vinted_init_session():
 
 def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                   max_articles=MAX_ARTICLES_PER_SOURCE):
+    if not SCRAPFLY_KEY:
+        logger.warning("[Vinted] SCRAPFLY_KEY manquante")
+        return []
+
     results = []
     candidates = []
-    try:
-        _vinted_init_session()
 
-        for page in range(1, 5):
-            params = {
-                "search_text": brand,
-                "price_from": min_price,
-                "price_to": max_price,
-                "currency": "EUR",
-                "per_page": 50,
-                "page": page,
-                "order": "relevance",
-            }
-            r = VINTED_SESSION.get(
-                "https://www.vinted.fr/api/v2/catalog/items",
-                params=params,
-                timeout=15,
+    try:
+        for page in range(1, 4):
+            vinted_url = (
+                f"https://www.vinted.fr/api/v2/catalog/items"
+                f"?search_text={brand.replace(' ', '+')}"
+                f"&price_from={min_price}"
+                f"&price_to={max_price}"
+                f"&currency=EUR"
+                f"&per_page=50"
+                f"&page={page}"
+                f"&order=relevance"
             )
 
-            if r.status_code == 403:
-                logger.warning(f"[Vinted] 403 — réinitialisation session")
-                _vinted_init_session()
-                break
+            r = requests.get(
+                "https://api.scrapfly.io/scrape",
+                params={
+                    "key": SCRAPFLY_KEY,
+                    "url": vinted_url,
+                    "asp": "true",
+                    "country": "fr",
+                    "headers": '{"Accept":"application/json","Origin":"https://www.vinted.fr"}',
+                },
+                timeout=30,
+            )
 
             if r.status_code != 200:
-                logger.warning(f"[Vinted] Status {r.status_code} page {page}")
+                logger.warning(f"[Vinted] ScrapFly status {r.status_code}")
                 break
 
             try:
-                items = r.json().get("items", [])
-            except Exception:
-                logger.warning(f"[Vinted] Réponse vide page {page}")
+                content = r.json().get("result", {}).get("content", "")
+                data = json.loads(content)
+                items = data.get("items", [])
+            except Exception as e:
+                logger.warning(f"[Vinted] Parse erreur: {e}")
                 break
 
             if not items:
+                logger.warning(f"[Vinted] Réponse vide page {page}")
                 break
 
             for item in items:
@@ -167,7 +176,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
             if len(candidates) >= max_articles * 3:
                 break
 
-            time.sleep(random.uniform(1.0, 1.5))
+            time.sleep(1)
 
         logger.info(f"[Vinted] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
 
