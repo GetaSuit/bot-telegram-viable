@@ -483,40 +483,38 @@ def main():
     init_db()
     logger.info("🗄️ DB initialisée")
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("marques", cmd_marques))
-    app.add_handler(CommandHandler("chercher", cmd_chercher))
-    app.add_handler(CommandHandler("test_sources", cmd_test_sources))
-    app.add_handler(CommandHandler("reset", cmd_reset))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    # Scan auto désactivé — recherche manuelle uniquement via /chercher
-    # app.job_queue.run_repeating(
-    #     scan_job,
-    #     interval=SCAN_INTERVAL_MINUTES * 60,
-    #     first=60,
-    #     name="scan_auto",
-    # )
-
-    logger.info(
-        f"🚀 Bot démarré — {len(BRANDS)} marques | "
-        f"scan auto désactivé | IA + vision hype"
-    )
-
     while True:
         try:
+            # Recrée l'app à chaque tentative
+            app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+            app.add_handler(CommandHandler("start", cmd_start))
+            app.add_handler(CommandHandler("help", cmd_help))
+            app.add_handler(CommandHandler("status", cmd_status))
+            app.add_handler(CommandHandler("marques", cmd_marques))
+            app.add_handler(CommandHandler("scan", cmd_scan))
+            app.add_handler(CommandHandler("chercher", cmd_chercher))
+            app.add_handler(CommandHandler("test_sources", cmd_test_sources))
+            app.add_handler(CallbackQueryHandler(button_callback))
+
+            app.job_queue.run_repeating(
+                scan_job,
+                interval=SCAN_INTERVAL_MINUTES * 60,
+                first=60,
+                name="scan_auto",
+            )
+
+            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | IA active")
+
             app.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
                 close_loop=False,
             )
+
         except Exception as e:
-            logger.warning(f"⚠️ Conflit, redémarrage dans 15s : {e}")
-            time.sleep(15)
+            logger.warning(f"⚠️ Erreur, redémarrage dans 20s : {e}")
+            time.sleep(20)
             continue
         break
 
