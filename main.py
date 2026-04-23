@@ -380,7 +380,7 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━━",
         f"💶 {MIN_PRICE}€ – {MAX_PRICE}€\n",
     ]
-    for name, fn in [("eBay", search_ebay), ("Vinted", search_vinted)]:
+    for name, fn in [("Vinted", search_vinted)]:
         try:
             res = fn(brand)
             if res:
