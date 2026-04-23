@@ -26,7 +26,7 @@ from config import (
     MAX_PRICE,
     SCAN_INTERVAL_MINUTES,
 )
-from scrapers import search_ebay, search_vinted, search_all_sources
+from scrapers import search_vinted, search_all_sources
 from database import init_db, is_already_seen, mark_as_seen
 
 logging.basicConfig(
