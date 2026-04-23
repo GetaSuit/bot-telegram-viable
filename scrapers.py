@@ -4,7 +4,6 @@ import random
 import logging
 from config import (
     BRANDS, MIN_PRICE, MAX_PRICE,
-    EBAY_APP_ID, EBAY_CERT_ID,
     HYPE_KEYWORDS,
 )
 from ai_scorer import analyze_article
@@ -64,134 +63,6 @@ def is_relevant(title: str, brand: str) -> bool:
         if kw in title_lower:
             return False
     return True
-
-
-# ──────────────────────────────────────────
-# EBAY
-# ──────────────────────────────────────────
-
-def get_ebay_token():
-    import base64
-    credentials = base64.b64encode(
-        f"{EBAY_APP_ID}:{EBAY_CERT_ID}".encode()
-    ).decode()
-    r = requests.post(
-        "https://api.ebay.com/identity/v1/oauth2/token",
-        headers={
-            "Authorization": f"Basic {credentials}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        data="grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
-        timeout=10,
-    )
-    return r.json().get("access_token")
-
-def search_ebay(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
-                max_articles=MAX_ARTICLES_PER_SOURCE):
-    results = []
-    candidates = []
-    try:
-        token = get_ebay_token()
-        if not token:
-            logger.error("[eBay] Token introuvable")
-            return []
-
-        offset = 0
-        limit = 50
-
-        while offset < 200 and len(candidates) < max_articles * 3:
-            params = {
-                "q": brand,
-                "filter": (
-                    f"price:[{min_price}..{max_price}],"
-                    f"currency:EUR,"
-                    f"deliveryCountry:FR"
-                ),
-                "sort": "newlyListed",
-                "limit": limit,
-                "offset": offset,
-            }
-            r = requests.get(
-                "https://api.ebay.com/buy/browse/v1/item_summary/search",
-                headers={"Authorization": f"Bearer {token}"},
-                params=params,
-                timeout=15,
-            )
-            r.raise_for_status()
-            data = r.json()
-            items = data.get("itemSummaries", [])
-
-            if not items:
-                break
-
-            for item in items:
-                title = item.get("title", "")
-                price_raw = item.get("price", {})
-                if not price_ok(price_raw):
-                    continue
-                if not is_relevant(title, brand):
-                    continue
-                candidates.append(item)
-
-            offset += limit
-            if offset >= data.get("total", 0):
-                break
-            time.sleep(0.3)
-
-        logger.info(f"[eBay] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
-
-        for item in candidates[:max_articles]:
-            title = item.get("title", "")
-            parsed_price = parse_price(item.get("price", {}))
-            image_url = item.get("image", {}).get("imageUrl")
-            use_vision = is_hype(title)
-
-            ai = analyze_article(
-                title=title,
-                brand=brand,
-                price=parsed_price or 0,
-                source="eBay",
-                image_url=image_url if use_vision else None,
-            )
-
-            if not ai.get("keep", True):
-                logger.info(f"[eBay] Ignoré: {title[:50]}")
-                continue
-
-            if ai.get("is_reseller", False):
-                logger.info(f"[eBay] Revendeur pro ignoré: {title[:50]}")
-                continue
-
-            results.append({
-                "title": title,
-                "price": parsed_price,
-                "url": item.get("itemWebUrl"),
-                "image": image_url,
-                "source": "eBay",
-                "is_trending": ai.get("is_trending", False),
-                "is_hype": is_hype(title) or ai.get("is_trending", False),
-                "is_runway": ai.get("is_runway", False),
-                "collection": ai.get("collection"),
-                "ai_verdict": ai.get("verdict", "correct"),
-                "ai_reason": ai.get("reason", ""),
-                "market_value": ai.get("market_value"),
-                "liquidity": ai.get("liquidity", "normale"),
-                "risk": ai.get("risk", "moyen"),
-            })
-
-        seen = set()
-        unique = []
-        for item in results:
-            if item["url"] not in seen:
-                seen.add(item["url"])
-                unique.append(item)
-
-        logger.info(f"[eBay] {len(unique)} articles validés pour '{brand}'")
-        return unique
-
-    except Exception as e:
-        logger.error(f"[eBay] Erreur '{brand}': {e}")
-        return []
 
 
 # ──────────────────────────────────────────
@@ -269,7 +140,7 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
             )
 
             if r.status_code == 403:
-                logger.warning(f"[Vinted] 403 — session expirée, réinitialisation")
+                logger.warning(f"[Vinted] 403 — réinitialisation session")
                 _vinted_init_session()
                 break
 
@@ -323,10 +194,6 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
                 logger.info(f"[Vinted] Ignoré: {title[:50]}")
                 continue
 
-            if ai.get("is_reseller", False):
-                logger.info(f"[Vinted] Revendeur pro ignoré: {title[:50]}")
-                continue
-
             results.append({
                 "title": title,
                 "price": parsed_price,
@@ -364,7 +231,4 @@ def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
 # ──────────────────────────────────────────
 
 def search_all_sources(brand: str, max_articles=MAX_ARTICLES_PER_SOURCE):
-    all_results = []
-    all_results.extend(search_ebay(brand, max_articles=max_articles))
-    all_results.extend(search_vinted(brand, max_articles=max_articles))
-    return all_results
+    return search_vinted(brand, max_articles=max_articles)
