@@ -30,7 +30,7 @@ from config import (
     MIN_PRICE,
     MAX_PRICE,
 )
-from scrapers import search_vinted, search_all_sources
+from scrapers import search_vinted, search_vestiaire, search_all_sources
 from database import init_db, is_already_seen, mark_as_seen
 
 logging.basicConfig(
@@ -138,6 +138,48 @@ def build_keyboard(item: dict) -> InlineKeyboardMarkup:
 
 
 # ──────────────────────────────────────────
+# RECHERCHE (core)
+# ──────────────────────────────────────────
+
+async def run_search(bot, brand: str, chat_id: str):
+    results = search_all_sources(brand)
+    new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
+
+    if not new_items:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"┌──────────────────────────┐\n"
+                f"│   ⚠️   AUCUN RÉSULTAT    │\n"
+                f"└──────────────────────────┘\n\n"
+                f"L'IA n'a retenu aucun article\n"
+                f"pour *{brand}*.\n\n"
+                f"_Réessaie dans quelques minutes_"
+            ),
+            parse_mode="Markdown",
+        )
+        return
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"┌──────────────────────────┐\n"
+            f"│  ✅  {len(new_items)} ARTICLE(S) TROUVÉ(S) │\n"
+            f"└──────────────────────────┘\n\n"
+            f"🏷️ *{brand}* — Sélection IA"
+        ),
+        parse_mode="Markdown",
+    )
+
+    for item in new_items[:15]:
+        url = item.get("url", "")
+        if url:
+            mark_as_seen(url)
+        await send_article(bot, item, brand)
+        await asyncio.sleep(1.5)
+
+
+# ──────────────────────────────────────────
 # ENVOI ARTICLE
 # ──────────────────────────────────────────
 
@@ -188,54 +230,11 @@ async def send_article(bot, item: dict, brand: str):
 
 
 # ──────────────────────────────────────────
-# RECHERCHE PAR MARQUE (core)
-# ──────────────────────────────────────────
-
-async def run_search(bot, brand: str, chat_id: str):
-    results = search_all_sources(brand)
-    new_items = [r for r in results if not is_already_seen(r.get("url", ""))]
-
-    if not new_items:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"╔══════════════════════╗\n"
-                f"║  ⚠️  AUCUN RÉSULTAT   ║\n"
-                f"╚══════════════════════╝\n\n"
-                f"L'IA n'a retenu aucun article\n"
-                f"pour *{brand}* dans cette session.\n\n"
-                f"_Réessaie dans quelques minutes_"
-            ),
-            parse_mode="Markdown",
-        )
-        return
-
-    await bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"┌─────────────────────────┐\n"
-            f"│  ✅  {len(new_items)} ARTICLE(S) TROUVÉ(S)  │\n"
-            f"└─────────────────────────┘\n\n"
-            f"🏷️ *{brand}* — Sélection IA"
-        ),
-        parse_mode="Markdown",
-    )
-
-    for item in new_items[:15]:
-        url = item.get("url", "")
-        if url:
-            mark_as_seen(url)
-        await send_article(bot, item, brand)
-        await asyncio.sleep(1.5)
-
-
-# ──────────────────────────────────────────
 # COMMANDES
 # ──────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Boutons marques populaires pour accès rapide
-    tier1_buttons = [
+    buttons = [
         [
             InlineKeyboardButton("👑 Hermès", callback_data="search_Hermès"),
             InlineKeyboardButton("💎 Chanel", callback_data="search_Chanel"),
@@ -262,43 +261,43 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     text = (
-        "┌────────────────────────────┐\n"
-        "│   👑  GETASUIT SOURCING    │\n"
-        "│   Assistant IA Luxe        │\n"
-        "└────────────────────────────┘\n\n"
+        "┌──────────────────────────────┐\n"
+        "│     👑  GETASUIT SOURCING    │\n"
+        "│     Assistant IA Luxe        │\n"
+        "└──────────────────────────────┘\n\n"
         "Bienvenue — Chaque article est analysé\n"
         "par Claude : *cote réelle · collections\n"
         "archives · profit potentiel*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 Source : *Vinted*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Sources : *Vinted · Vestiaire*\n"
         f"💶 Budget : *{MIN_PRICE}€ – {MAX_PRICE}€*\n"
         f"🏷️ Maisons : *{len(BRANDS)} surveillées*\n"
         f"🤖 IA : *Claude Sonnet — actif*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👇 *Sélectionne une marque à rechercher*"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👇 *Sélectionne une marque*"
     )
 
     await update.message.reply_text(
         text,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(tier1_buttons),
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "┌────────────────────────────┐\n"
-        "│      ❓  AIDE & COMMANDES  │\n"
-        "└────────────────────────────┘\n\n"
+        "┌──────────────────────────────┐\n"
+        "│      ❓  AIDE & COMMANDES    │\n"
+        "└──────────────────────────────┘\n\n"
         "🔎 /chercher `<marque>`\n"
-        "   _Recherche immédiate sur Vinted_\n"
+        "   _Recherche immédiate_\n"
         "   Ex : `/chercher Hermès`\n\n"
         "🏷️ /marques\n"
-        "   _Liste des 37 maisons surveillées_\n\n"
+        "   _Liste cliquable des maisons_\n\n"
         "📊 /status\n"
-        "   _État du bot en temps réel_\n\n"
+        "   _État du bot_\n\n"
         "🔬 /test\\_sources\n"
-        "   _Diagnostic Vinted_\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "   _Diagnostic des sources_\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🤖 *Analyse IA par article :*\n\n"
         "• Détection particulier vs revendeur\n"
         "• Cote réelle (Vestiaire, RealReal)\n"
@@ -306,7 +305,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Pièces de défilé identifiées\n"
         "• Profit net après commission 15%\n"
         "• Liquidité & niveau de risque\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🎭 *PIÈCE DE DÉFILÉ* — collection identifiée\n"
         "🔥 *COUP DU JOUR* — tendance du moment"
     )
@@ -314,28 +313,27 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "┌────────────────────────────┐\n"
-        "│      📊  STATUT DU BOT     │\n"
-        "└────────────────────────────┘\n\n"
+        "┌──────────────────────────────┐\n"
+        "│      📊  STATUT DU BOT       │\n"
+        "└──────────────────────────────┘\n\n"
         f"🟢 *Bot actif*\n"
         f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 *Source* : Vinted\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 *Sources* : Vinted · Vestiaire\n"
         f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ *Maisons* : {len(BRANDS)} surveillées\n"
         f"🤖 *IA* : Claude Sonnet\n"
         f"👁️ *Vision* : activée sur articles hype\n"
         f"🔄 *Scan auto* : désactivé\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "_Utilise /chercher pour lancer une recherche_"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Boutons cliquables pour chaque marque
     buttons = []
     row = []
-    for i, brand in enumerate(sorted(BRANDS)):
+    for brand in sorted(BRANDS):
         row.append(InlineKeyboardButton(brand, callback_data=f"search_{brand}"))
         if len(row) == 2:
             buttons.append(row)
@@ -344,9 +342,9 @@ async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(row)
 
     text = (
-        "┌────────────────────────────┐\n"
-        "│    🏷️  MAISONS SURVEILLÉES │\n"
-        "└────────────────────────────┘\n\n"
+        "┌──────────────────────────────┐\n"
+        "│    🏷️  MAISONS SURVEILLÉES   │\n"
+        "└──────────────────────────────┘\n\n"
         "👇 *Clique sur une marque pour lancer\n"
         "une recherche immédiate*\n\n"
         f"_{len(BRANDS)} maisons au total_"
@@ -359,10 +357,9 @@ async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        # Affiche les boutons si pas de marque précisée
         buttons = []
         row = []
-        for i, brand in enumerate(sorted(BRANDS)):
+        for brand in sorted(BRANDS):
             row.append(InlineKeyboardButton(brand, callback_data=f"search_{brand}"))
             if len(row) == 2:
                 buttons.append(row)
@@ -371,9 +368,9 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append(row)
 
         await update.message.reply_text(
-            "┌────────────────────────────┐\n"
-            "│     🔎  CHOISIR UNE MARQUE │\n"
-            "└────────────────────────────┘\n\n"
+            "┌──────────────────────────────┐\n"
+            "│     🔎  CHOISIR UNE MARQUE   │\n"
+            "└──────────────────────────────┘\n\n"
             "👇 *Sélectionne une marque* ou tape :\n"
             "`/chercher Hermès`",
             parse_mode="Markdown",
@@ -393,11 +390,12 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        f"┌────────────────────────────┐\n"
-        f"│     🔎  RECHERCHE EN COURS │\n"
-        f"└────────────────────────────┘\n\n"
+        f"┌──────────────────────────────┐\n"
+        f"│     🔎  RECHERCHE EN COURS   │\n"
+        f"└──────────────────────────────┘\n\n"
         f"🏷️ *{brand_match}*\n"
         f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+        f"📦 Vinted · Vestiaire Collective\n"
         f"🤖 Claude analyse chaque article...\n\n"
         f"_Résultats dans quelques instants_",
         parse_mode="Markdown",
@@ -407,34 +405,35 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "┌────────────────────────────┐\n"
-        "│   🔬  DIAGNOSTIC SOURCES   │\n"
-        "└────────────────────────────┘\n\n"
+        "┌──────────────────────────────┐\n"
+        "│   🔬  DIAGNOSTIC SOURCES     │\n"
+        "└──────────────────────────────┘\n\n"
         "_Test en cours..._",
         parse_mode="Markdown",
     )
     brand = "Hermès"
     lines = [
         f"🔬 *Diagnostic — {brand}*",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"💶 {MIN_PRICE}€ – {MAX_PRICE}€\n",
     ]
-    try:
-        res = search_vinted(brand)
-        if res:
-            sample = res[0]
-            lines.append(
-                f"✅ *Vinted* : {len(res)} article(s) validé(s)\n"
-                f"   📌 {str(sample.get('title',''))[:45]}…\n"
-                f"   💰 {sample.get('price')}€\n"
-                f"   🤖 _{sample.get('ai_reason', '')[:60]}_"
-            )
-        else:
-            lines.append(f"⚠️ *Vinted* : aucun article retenu par l'IA")
-    except Exception as e:
-        lines.append(f"❌ *Vinted* : `{str(e)[:60]}`")
+    for name, fn in [("Vinted", search_vinted), ("Vestiaire", search_vestiaire)]:
+        try:
+            res = fn(brand)
+            if res:
+                sample = res[0]
+                lines.append(
+                    f"✅ *{name}* : {len(res)} article(s) validé(s)\n"
+                    f"   📌 {str(sample.get('title',''))[:45]}…\n"
+                    f"   💰 {sample.get('price')}€\n"
+                    f"   🤖 _{sample.get('ai_reason', '')[:60]}_"
+                )
+            else:
+                lines.append(f"⚠️ *{name}* : aucun article retenu")
+        except Exception as e:
+            lines.append(f"❌ *{name}* : `{str(e)[:60]}`")
 
-    lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -446,40 +445,40 @@ async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     data = query.data
 
-    # ── Recherche directe par marque
     if data.startswith("search_"):
         brand = data[7:]
         brand_match = next((b for b in BRANDS if b == brand), None)
         if not brand_match:
-            await query.message.reply_text(f"❌ Marque non reconnue : `{brand}`", parse_mode="Markdown")
+            await query.message.reply_text(
+                f"❌ Marque non reconnue : `{brand}`",
+                parse_mode="Markdown"
+            )
             return
 
         await query.message.reply_text(
-            f"┌────────────────────────────┐\n"
-            f"│     🔎  RECHERCHE EN COURS │\n"
-            f"└────────────────────────────┘\n\n"
+            f"┌──────────────────────────────┐\n"
+            f"│     🔎  RECHERCHE EN COURS   │\n"
+            f"└──────────────────────────────┘\n\n"
             f"🏷️ *{brand_match}*\n"
             f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
+            f"📦 Vinted · Vestiaire Collective\n"
             f"🤖 Claude analyse chaque article...\n\n"
             f"_Résultats dans quelques instants_",
             parse_mode="Markdown",
         )
         await run_search(context.bot, brand_match, query.message.chat_id)
 
-    # ── Recherche custom
     elif data == "do_search_custom":
         await query.message.reply_text(
             "🔎 *Recherche par marque*\n\n"
-            "Tape la commande suivante :\n"
+            "Tape la commande :\n"
             "`/chercher NomDeLaMarque`\n\n"
             "Ex : `/chercher Saint Laurent`",
             parse_mode="Markdown",
         )
 
-    # ── Marques avec boutons
     elif data == "do_marques":
         buttons = []
         row = []
@@ -491,37 +490,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row:
             buttons.append(row)
         await query.message.reply_text(
-            "┌────────────────────────────┐\n"
-            "│    🏷️  MAISONS SURVEILLÉES │\n"
-            "└────────────────────────────┘\n\n"
-            "👇 *Clique sur une marque pour lancer\n"
-            "une recherche immédiate*",
+            "┌──────────────────────────────┐\n"
+            "│    🏷️  MAISONS SURVEILLÉES   │\n"
+            "└──────────────────────────────┘\n\n"
+            "👇 *Clique sur une marque*",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    # ── Statut
     elif data == "do_status":
         await query.message.reply_text(
-            "┌────────────────────────────┐\n"
-            "│      📊  STATUT DU BOT     │\n"
-            "└────────────────────────────┘\n\n"
-            f"🟢 *Bot actif*\n"
-            f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n\n"
-            f"📦 Source : Vinted\n"
-            f"💶 Budget : {MIN_PRICE}€ – {MAX_PRICE}€\n"
-            f"🏷️ Maisons : {len(BRANDS)}\n"
+            "┌──────────────────────────────┐\n"
+            "│      📊  STATUT DU BOT       │\n"
+            "└──────────────────────────────┘\n\n"
+            f"🟢 Bot actif\n"
+            f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n"
+            f"📦 Vinted · Vestiaire\n"
             f"🤖 IA Claude : actif\n"
             f"🔄 Scan auto : désactivé",
             parse_mode="Markdown",
         )
 
-    # ── Aide
     elif data == "do_help":
         await query.message.reply_text(
-            "┌────────────────────────────┐\n"
-            "│      ❓  COMMANDES         │\n"
-            "└────────────────────────────┘\n\n"
+            "┌──────────────────────────────┐\n"
+            "│      ❓  COMMANDES           │\n"
+            "└──────────────────────────────┘\n\n"
             "🔎 /chercher — Recherche par marque\n"
             "🏷️ /marques — Liste cliquable\n"
             "📊 /status — État du bot\n"
@@ -530,13 +524,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-    # ── Boutons article
     elif data == "interested":
         await query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("⭐ Sauvegardé", callback_data="noop")
             ]])
         )
+
     elif data == "ignore":
         await query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup([[
@@ -546,7 +540,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ──────────────────────────────────────────
-# SETUP COMMANDES TELEGRAM (menu /)
+# SETUP COMMANDES TELEGRAM
 # ──────────────────────────────────────────
 
 async def setup_commands(app: Application):
@@ -555,7 +549,7 @@ async def setup_commands(app: Application):
         BotCommand("chercher", "🔎 Rechercher une marque"),
         BotCommand("marques", "🏷️ Liste des maisons surveillées"),
         BotCommand("status", "📊 État du bot"),
-        BotCommand("test_sources", "🔬 Diagnostic Vinted"),
+        BotCommand("test_sources", "🔬 Diagnostic sources"),
         BotCommand("help", "❓ Aide & commandes"),
     ])
 
@@ -583,11 +577,10 @@ def main():
             app.add_handler(CommandHandler("test_sources", cmd_test_sources))
             app.add_handler(CallbackQueryHandler(button_callback))
 
-            # Setup menu Telegram
             import asyncio as _asyncio
             _asyncio.get_event_loop().run_until_complete(setup_commands(app))
 
-            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Vinted | IA Claude")
+            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Vinted + Vestiaire | IA Claude")
 
             app.run_polling(
                 allowed_updates=Update.ALL_TYPES,
