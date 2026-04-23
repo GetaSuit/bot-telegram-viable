@@ -163,9 +163,9 @@ async def run_search(bot, brand: str, chat_id: str):
     await bot.send_message(
         chat_id=chat_id,
         text=(
-            f"┌──────────────────────────┐\n"
-            f"│  ✅  {len(new_items)} ARTICLE(S) TROUVÉ(S) │\n"
-            f"└──────────────────────────┘\n\n"
+            f"┌──────────────────────────────┐\n"
+            f"│  ✅  {len(new_items)} ARTICLE(S) TROUVÉ(S)  │\n"
+            f"└──────────────────────────────┘\n\n"
             f"🏷️ *{brand}* — Sélection IA"
         ),
         parse_mode="Markdown",
@@ -400,7 +400,6 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"_Résultats dans quelques instants_",
         parse_mode="Markdown",
     )
-
     await run_search(context.bot, brand_match, update.message.chat_id)
 
 async def cmd_test_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,7 +455,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             return
-
         await query.message.reply_text(
             f"┌──────────────────────────────┐\n"
             f"│     🔎  RECHERCHE EN COURS   │\n"
@@ -567,7 +565,12 @@ def main():
 
     while True:
         try:
-            app = Application.builder().token(TELEGRAM_TOKEN).build()
+            app = (
+                Application.builder()
+                .token(TELEGRAM_TOKEN)
+                .post_init(setup_commands)
+                .build()
+            )
 
             app.add_handler(CommandHandler("start", cmd_start))
             app.add_handler(CommandHandler("help", cmd_help))
@@ -577,14 +580,10 @@ def main():
             app.add_handler(CommandHandler("test_sources", cmd_test_sources))
             app.add_handler(CallbackQueryHandler(button_callback))
 
-           app = (
-    Application.builder()
-    .token(TELEGRAM_TOKEN)
-    .post_init(setup_commands)
-    .build()
-)
-
-            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Vinted + Vestiaire | IA Claude")
+            logger.info(
+                f"🚀 Bot démarré — {len(BRANDS)} marques | "
+                f"Vinted + Vestiaire | IA Claude"
+            )
 
             app.run_polling(
                 allowed_updates=Update.ALL_TYPES,
