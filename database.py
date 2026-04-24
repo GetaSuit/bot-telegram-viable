@@ -3,32 +3,34 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_seen_urls: set = set()
-_DB_FILE = "/tmp/seen_urls.txt"
+_seen: set = set()
+_FILE = "/tmp/seen.txt"
+
 
 def init_db():
-    global _seen_urls
+    global _seen
     try:
-        if os.path.exists(_DB_FILE):
-            with open(_DB_FILE, "r") as f:
-                _seen_urls = set(line.strip() for line in f if line.strip())
-            logger.info(f"[DB] {len(_seen_urls)} URLs chargées")
+        if os.path.exists(_FILE):
+            with open(_FILE) as f:
+                _seen = set(l.strip() for l in f if l.strip())
+            logger.info(f"[DB] {len(_seen)} URLs chargées")
         else:
-            _seen_urls = set()
-            logger.info("[DB] Nouvelle base initialisée")
+            _seen = set()
     except Exception as e:
-        logger.error(f"[DB] Erreur init: {e}")
-        _seen_urls = set()
+        logger.error(f"[DB] {e}")
+        _seen = set()
 
-def is_already_seen(url: str) -> bool:
-    return url in _seen_urls
 
-def mark_as_seen(url: str):
+def is_seen(url: str) -> bool:
+    return url in _seen
+
+
+def mark_seen(url: str):
     if not url:
         return
-    _seen_urls.add(url)
+    _seen.add(url)
     try:
-        with open(_DB_FILE, "a") as f:
+        with open(_FILE, "a") as f:
             f.write(url + "\n")
-    except Exception as e:
-        logger.warning(f"[DB] Erreur sauvegarde: {e}")
+    except Exception:
+        pass
