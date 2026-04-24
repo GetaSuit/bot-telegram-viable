@@ -1,5 +1,6 @@
 """
 main.py — GetaSuit Sourcing Bot
+Alertes en temps réel — Vinted + Vestiaire Collective
 python-telegram-bot 20.6 | Render.com
 """
 
@@ -14,7 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotComm
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from config import TELEGRAM_TOKEN, CHAT_ID, BRANDS, MIN_PRICE, MAX_PRICE
-from scrapers import search_all, search_vinted, search_vestiaire
+from scrapers import fetch_new, fetch_vinted_new, fetch_vestiaire_new
 from database import init_db, is_seen, mark_seen
 
 logging.basicConfig(
@@ -23,12 +24,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Intervalle de surveillance en secondes (5 min)
+WATCH_INTERVAL = 300
+_watching = {"active": False}
+_watch_task = {"task": None}
+
 
 # ──────────────────────────────────────────
 # KEEP ALIVE
 # ──────────────────────────────────────────
 
-class HealthHandler(BaseHTTPRequestHandler):
+class H(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
@@ -37,47 +43,34 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def start_http():
-    HTTPServer(("0.0.0.0", 10000), HealthHandler).serve_forever()
+    HTTPServer(("0.0.0.0", 10000), H).serve_forever()
 
 
 # ──────────────────────────────────────────
-# FORMATAGE
+# FORMATAGE ALERTE
 # ──────────────────────────────────────────
 
-def fmt(item: dict, brand: str) -> str:
+def format_alert(item: dict) -> str:
     title = item.get("title", "?")
+    brand = item.get("brand", "?")
     price = item.get("price", "?")
+    size = item.get("size", "")
     source = item.get("source", "?")
     url = item.get("url", "")
-    reason = item.get("ai_reason", "")
-    verdict = item.get("ai_verdict", "correct")
-    mv = item.get("market_value")
-    profit = item.get("profit_net")
 
-    icons = {"excellent": "🏆", "bon": "✅", "correct": "👍", "faible": "💤", "suspect": "⚠️"}
-    icon = icons.get(verdict, "🔍")
-
-    reason_line = f"{icon} _{reason}_\n\n" if reason else ""
-
-    profit_line = ""
-    if mv and profit and profit > 0:
-        profit_line = (
-            f"💹 *Revente* : ~{mv:.0f}€\n"
-            f"📊 *Profit net* : +{profit:.0f}€\n"
-        )
-    elif mv:
-        profit_line = f"💹 *Valeur marché* : ~{mv:.0f}€\n"
+    size_line = f"📐 *Taille* : {size}\n" if size else ""
 
     return (
-        f"{reason_line}"
-        f"🏷️ *{title}*\n\n"
-        f"💰 *Prix* : {price}€\n"
-        f"{profit_line}"
-        f"📦 *Source* : {source}\n\n"
+        f"🔔 *NOUVELLE ANNONCE*\n\n"
+        f"🏷️ *{brand}*\n"
+        f"_{title}_\n\n"
+        f"💰 *{price}€*\n"
+        f"{size_line}"
+        f"📦 {source}\n\n"
         f"🔗 [Voir l'annonce]({url})"
     )
 
-def kbd(item: dict) -> InlineKeyboardMarkup:
+def build_kbd(item: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 Voir l'annonce", url=item.get("url", ""))],
         [
@@ -86,87 +79,77 @@ def kbd(item: dict) -> InlineKeyboardMarkup:
         ],
     ])
 
-async def send(bot, item: dict, brand: str):
-    text = fmt(item, brand)
+async def send_alert(bot, item: dict):
+    text = format_alert(item)
+    kbd = build_kbd(item)
     image = item.get("image")
-    keyboard = kbd(item)
     try:
         if image:
             await bot.send_photo(
-                chat_id=CHAT_ID, photo=image,
-                caption=text, parse_mode="Markdown",
-                reply_markup=keyboard,
+                chat_id=CHAT_ID,
+                photo=image,
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=kbd,
             )
         else:
             await bot.send_message(
-                chat_id=CHAT_ID, text=text,
-                parse_mode="Markdown", reply_markup=keyboard,
+                chat_id=CHAT_ID,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=kbd,
             )
     except Exception as e:
-        logger.warning(f"[send] {e}")
+        logger.warning(f"[alert] {e}")
         try:
             await bot.send_message(
-                chat_id=CHAT_ID, text=text,
-                parse_mode="Markdown", reply_markup=keyboard,
+                chat_id=CHAT_ID,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=kbd,
             )
         except Exception as e2:
-            logger.error(f"[send] fallback: {e2}")
+            logger.error(f"[alert] fallback: {e2}")
 
 
 # ──────────────────────────────────────────
-# RECHERCHE CORE
+# BOUCLE DE SURVEILLANCE
 # ──────────────────────────────────────────
 
-async def do_search(bot, brand: str, chat_id):
-    await bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"┌──────────────────────────────┐\n"
-            f"│     🔎  RECHERCHE EN COURS   │\n"
-            f"└──────────────────────────────┘\n\n"
-            f"🏷️ *{brand}*\n"
-            f"💶 {MIN_PRICE}€ – {MAX_PRICE}€\n"
-            f"📦 Vinted · Vestiaire Collective\n"
-            f"🤖 Analyse IA en cours...\n\n"
-            f"_Résultats dans quelques instants_"
-        ),
-        parse_mode="Markdown",
-    )
+async def watch_loop(bot):
+    """Surveille toutes les marques en rotation et alerte dès qu'un nouvel article apparaît."""
+    logger.info("👁️ Surveillance démarrée")
+    cursor = 0
 
-    items = search_all(brand)
-    new = [i for i in items if not is_seen(i.get("url", ""))]
+    while _watching["active"]:
+        brand = BRANDS[cursor % len(BRANDS)]
+        cursor += 1
 
-    if not new:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"┌──────────────────────────┐\n"
-                f"│   ⚠️  AUCUN RÉSULTAT     │\n"
-                f"└──────────────────────────┘\n\n"
-                f"Aucun article retenu pour *{brand}*.\n"
-                f"_Réessaie dans quelques minutes_"
-            ),
-            parse_mode="Markdown",
-        )
-        return
+        try:
+            items = fetch_new(brand)
+            new_items = [i for i in items if not is_seen(i.get("id", i.get("url", "")))]
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f"✅ *{len(new)} article(s)* sélectionné(s) pour *{brand}*",
-        parse_mode="Markdown",
-    )
+            for item in new_items:
+                uid = item.get("id", item.get("url", ""))
+                mark_seen(uid)
+                await send_alert(bot, item)
+                logger.info(f"🔔 Alerte envoyée : {item.get('title','')[:50]} — {item.get('price')}€")
+                await asyncio.sleep(2)
 
-    for item in new[:15]:
-        mark_seen(item.get("url", ""))
-        await send(bot, item, brand)
-        await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.error(f"[watch] Erreur '{brand}': {e}")
+
+        # Pause entre chaque marque
+        await asyncio.sleep(WATCH_INTERVAL / len(BRANDS))
+
+    logger.info("👁️ Surveillance arrêtée")
 
 
 # ──────────────────────────────────────────
 # COMMANDES
 # ──────────────────────────────────────────
 
-def marques_buttons() -> list:
+def brand_buttons() -> list:
     buttons = []
     row = []
     for b in sorted(BRANDS):
@@ -179,89 +162,132 @@ def marques_buttons() -> list:
     return buttons
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "🟢 Active" if _watching["active"] else "🔴 Inactive"
     buttons = [
         [
-            InlineKeyboardButton("👑 Hermès", callback_data="s_Hermès"),
-            InlineKeyboardButton("💎 Chanel", callback_data="s_Chanel"),
-            InlineKeyboardButton("🌟 Dior", callback_data="s_Dior"),
+            InlineKeyboardButton("▶️ Activer la surveillance", callback_data="watch_on"),
+            InlineKeyboardButton("⏹️ Désactiver", callback_data="watch_off"),
         ],
         [
-            InlineKeyboardButton("🖤 Louis Vuitton", callback_data="s_Louis Vuitton"),
-            InlineKeyboardButton("✨ Gucci", callback_data="s_Gucci"),
-            InlineKeyboardButton("🔥 Tom Ford", callback_data="s_Tom Ford"),
-        ],
-        [
-            InlineKeyboardButton("⚡ Balenciaga", callback_data="s_Balenciaga"),
-            InlineKeyboardButton("🏆 Brioni", callback_data="s_Brioni"),
-            InlineKeyboardButton("💼 Lanvin", callback_data="s_Lanvin"),
-        ],
-        [
-            InlineKeyboardButton("📋 Toutes les marques", callback_data="all_brands"),
-            InlineKeyboardButton("🔎 Autre marque", callback_data="custom"),
+            InlineKeyboardButton("🔎 Chercher maintenant", callback_data="search_now"),
+            InlineKeyboardButton("🏷️ Les marques", callback_data="all_brands"),
         ],
         [
             InlineKeyboardButton("📊 Statut", callback_data="status"),
             InlineKeyboardButton("❓ Aide", callback_data="help"),
         ],
     ]
+
     await update.message.reply_text(
         "┌──────────────────────────────┐\n"
         "│     👑  GETASUIT SOURCING    │\n"
-        "│     Assistant IA Luxe        │\n"
+        "│     Alertes Luxe en Direct   │\n"
         "└──────────────────────────────┘\n\n"
-        "Chaque article est analysé par Claude :\n"
-        "*cote réelle · profit · authenticité*\n\n"
+        f"📡 *Surveillance* : {status}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 *Sources* : Vinted · Vestiaire\n"
         f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ *Maisons* : {len(BRANDS)} surveillées\n"
-        f"🤖 *IA* : Claude Sonnet\n"
+        f"⏱️ *Check* : toutes les {WATCH_INTERVAL//60} min\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👇 *Sélectionne une marque*",
+        "👇 *Active la surveillance pour recevoir\n"
+        "les alertes en temps réel*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
-async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Active la surveillance."""
+    if _watching["active"]:
+        await update.message.reply_text("👁️ La surveillance est déjà active.")
+        return
+    _watching["active"] = True
+    task = asyncio.create_task(watch_loop(context.bot))
+    _watch_task["task"] = task
     await update.message.reply_text(
-        "┌──────────────────────────────┐\n"
-        "│    🏷️  MAISONS SURVEILLÉES   │\n"
-        "└──────────────────────────────┘\n\n"
-        f"👇 *Clique pour lancer une recherche*\n_{len(BRANDS)} maisons_",
+        "✅ *Surveillance activée*\n\n"
+        f"Je surveille {len(BRANDS)} marques sur Vinted et Vestiaire.\n"
+        f"Tu recevras une alerte dès qu'un nouvel article apparaît.\n\n"
+        f"_Check toutes les {WATCH_INTERVAL//60} min_",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(marques_buttons()),
+    )
+
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Désactive la surveillance."""
+    _watching["active"] = False
+    if _watch_task.get("task"):
+        _watch_task["task"].cancel()
+    await update.message.reply_text(
+        "⏹️ *Surveillance désactivée*\n\n"
+        "Utilise /watch pour la réactiver.",
+        parse_mode="Markdown",
     )
 
 async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recherche manuelle immédiate sur une marque."""
     if not context.args:
         await update.message.reply_text(
-            "🔎 Usage : `/chercher Hermès`",
+            "🔎 Usage : `/chercher Hermès`\n\nOu choisis une marque :",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(marques_buttons()),
+            reply_markup=InlineKeyboardMarkup(brand_buttons()),
         )
         return
+
     brand = " ".join(context.args)
     match = next((b for b in BRANDS if b.lower() == brand.lower()), None)
     if not match:
         await update.message.reply_text(
-            f"❌ Marque `{brand}` non reconnue.\nTape /marques pour la liste.",
+            f"❌ Marque `{brand}` non reconnue.\n/marques pour la liste.",
             parse_mode="Markdown",
         )
         return
-    await do_search(context.bot, match, update.message.chat_id)
+
+    await update.message.reply_text(
+        f"🔎 Recherche *{match}* sur Vinted et Vestiaire...",
+        parse_mode="Markdown",
+    )
+
+    items = fetch_new(match)
+    new = [i for i in items if not is_seen(i.get("id", i.get("url", "")))]
+
+    if not new:
+        await update.message.reply_text(
+            f"⚠️ Aucun nouvel article pour *{match}* pour le moment.\n"
+            f"_Active la surveillance avec /watch pour les alertes automatiques_",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text(
+        f"🔔 *{len(new)} article(s) trouvé(s)* pour *{match}*",
+        parse_mode="Markdown",
+    )
+
+    for item in new[:10]:
+        mark_seen(item.get("id", item.get("url", "")))
+        await send_alert(context.bot, item)
+        await asyncio.sleep(1.5)
+
+async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"🏷️ *{len(BRANDS)} maisons surveillées*\n\n"
+        "👇 Clique pour une recherche immédiate",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(brand_buttons()),
+    )
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "🟢 Active" if _watching["active"] else "🔴 Inactive"
     await update.message.reply_text(
         "┌──────────────────────────────┐\n"
-        "│      📊  STATUT DU BOT       │\n"
+        "│      📊  STATUT              │\n"
         "└──────────────────────────────┘\n\n"
-        f"🟢 *Bot actif*\n"
+        f"📡 *Surveillance* : {status}\n"
         f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n\n"
         f"📦 Vinted · Vestiaire Collective\n"
         f"💶 {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} maisons\n"
-        f"🤖 IA Claude : actif\n"
-        f"🔄 Scan auto : désactivé",
+        f"⏱️ Check toutes les {WATCH_INTERVAL//60} min",
         parse_mode="Markdown",
     )
 
@@ -270,44 +296,24 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┌──────────────────────────────┐\n"
         "│      ❓  AIDE                │\n"
         "└──────────────────────────────┘\n\n"
+        "▶️ /watch — Activer les alertes automatiques\n"
+        "⏹️ /stop — Désactiver les alertes\n"
         "🔎 /chercher `<marque>` — Recherche immédiate\n"
         "🏷️ /marques — Liste cliquable\n"
-        "📊 /status — État du bot\n"
-        "🔬 /test — Diagnostic\n\n"
+        "📊 /status — État du bot\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🤖 *L'IA analyse chaque article :*\n"
-        "• Valeur marché réelle\n"
-        "• Profit net estimé\n"
-        "• Authenticité\n"
-        "• Tendance actuelle",
+        "💡 *Comment ça marche :*\n\n"
+        "Lance `/watch` — le bot surveille Vinted\n"
+        "et Vestiaire toutes les 5 min.\n"
+        "Dès qu'un article correspondant à tes\n"
+        "critères apparaît → tu reçois une alerte\n"
+        "avec le nom, la marque, le prix et le lien.",
         parse_mode="Markdown",
     )
 
-async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔬 Diagnostic en cours...", parse_mode="Markdown")
-    brand = "Tom Ford"
-    lines = [f"🔬 *Diagnostic — {brand}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
-    for name, fn in [("Vinted", search_vinted), ("Vestiaire", search_vestiaire)]:
-        try:
-            res = fn(brand)
-            if res:
-                s = res[0]
-                lines.append(
-                    f"✅ *{name}* : {len(res)} article(s)\n"
-                    f"   📌 {s.get('title','')[:40]}…\n"
-                    f"   💰 {s.get('price')}€\n"
-                    f"   🤖 _{s.get('ai_reason','')[:50]}_"
-                )
-            else:
-                lines.append(f"⚠️ *{name}* : 0 résultat")
-        except Exception as e:
-            lines.append(f"❌ *{name}* : `{str(e)[:50]}`")
-    lines.append(f"\n🕐 {datetime.now().strftime('%H:%M:%S')}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
 
 # ──────────────────────────────────────────
-# CALLBACKS
+# CALLBACKS BOUTONS
 # ──────────────────────────────────────────
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -315,38 +321,84 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     d = q.data
 
-    if d.startswith("s_"):
-        brand = d[2:]
-        match = next((b for b in BRANDS if b == brand), None)
-        if match:
-            await do_search(context.bot, match, q.message.chat_id)
+    if d == "watch_on":
+        if not _watching["active"]:
+            _watching["active"] = True
+            task = asyncio.create_task(watch_loop(context.bot))
+            _watch_task["task"] = task
+        await q.message.reply_text(
+            "✅ *Surveillance activée*\n\n"
+            f"Je surveille {len(BRANDS)} marques.\n"
+            "Tu recevras une alerte dès qu'un nouvel article apparaît.",
+            parse_mode="Markdown",
+        )
+
+    elif d == "watch_off":
+        _watching["active"] = False
+        if _watch_task.get("task"):
+            _watch_task["task"].cancel()
+        await q.message.reply_text(
+            "⏹️ *Surveillance désactivée*\n\n"
+            "Utilise /watch pour la réactiver.",
+            parse_mode="Markdown",
+        )
+
+    elif d == "search_now":
+        await q.message.reply_text(
+            "🔎 *Recherche par marque*\n\nChoisis ou tape `/chercher Hermès`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(brand_buttons()),
+        )
 
     elif d == "all_brands":
         await q.message.reply_text(
-            "🏷️ *Toutes les maisons*\n\n👇 Clique pour rechercher",
+            f"🏷️ *{len(BRANDS)} maisons*\n\n👇 Clique pour rechercher",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(marques_buttons()),
+            reply_markup=InlineKeyboardMarkup(brand_buttons()),
         )
 
-    elif d == "custom":
+    elif d.startswith("s_"):
+        brand = d[2:]
+        match = next((b for b in BRANDS if b == brand), None)
+        if not match:
+            return
         await q.message.reply_text(
-            "🔎 Tape : `/chercher NomMarque`\nEx : `/chercher Saint Laurent`",
+            f"🔎 Recherche *{match}*...",
             parse_mode="Markdown",
         )
+        items = fetch_new(match)
+        new = [i for i in items if not is_seen(i.get("id", i.get("url", "")))]
+        if not new:
+            await q.message.reply_text(
+                f"⚠️ Aucun nouvel article pour *{match}*.\n_Réessaie plus tard_",
+                parse_mode="Markdown",
+            )
+            return
+        await q.message.reply_text(
+            f"🔔 *{len(new)} article(s)* pour *{match}*",
+            parse_mode="Markdown",
+        )
+        for item in new[:10]:
+            mark_seen(item.get("id", item.get("url", "")))
+            await send_alert(context.bot, item)
+            await asyncio.sleep(1.5)
 
     elif d == "status":
+        status = "🟢 Active" if _watching["active"] else "🔴 Inactive"
         await q.message.reply_text(
-            f"📊 *Statut*\n🟢 Actif | 🕐 {datetime.now().strftime('%H:%M')}\n"
-            f"📦 Vinted · Vestiaire | 🤖 IA Claude",
+            f"📡 *Surveillance* : {status}\n"
+            f"🕐 {datetime.now().strftime('%H:%M')}\n"
+            f"🏷️ {len(BRANDS)} maisons | ⏱️ {WATCH_INTERVAL//60} min",
             parse_mode="Markdown",
         )
 
     elif d == "help":
         await q.message.reply_text(
-            "🔎 /chercher — Recherche\n"
+            "▶️ /watch — Alertes automatiques\n"
+            "⏹️ /stop — Désactiver\n"
+            "🔎 /chercher — Recherche immédiate\n"
             "🏷️ /marques — Liste\n"
-            "📊 /status — État\n"
-            "🔬 /test — Diagnostic",
+            "📊 /status — État",
             parse_mode="Markdown",
         )
 
@@ -372,10 +424,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setup_commands(app: Application):
     await app.bot.set_my_commands([
         BotCommand("start", "🏠 Accueil"),
-        BotCommand("chercher", "🔎 Rechercher une marque"),
+        BotCommand("watch", "▶️ Activer les alertes"),
+        BotCommand("stop", "⏹️ Désactiver les alertes"),
+        BotCommand("chercher", "🔎 Recherche immédiate"),
         BotCommand("marques", "🏷️ Liste des maisons"),
-        BotCommand("status", "📊 État du bot"),
-        BotCommand("test", "🔬 Diagnostic"),
+        BotCommand("status", "📊 État"),
         BotCommand("help", "❓ Aide"),
     ])
 
@@ -403,10 +456,11 @@ def main():
             app.add_handler(CommandHandler("status", cmd_status))
             app.add_handler(CommandHandler("marques", cmd_marques))
             app.add_handler(CommandHandler("chercher", cmd_chercher))
-            app.add_handler(CommandHandler("test", cmd_test))
+            app.add_handler(CommandHandler("watch", cmd_watch))
+            app.add_handler(CommandHandler("stop", cmd_stop))
             app.add_handler(CallbackQueryHandler(on_button))
 
-            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Vinted + Vestiaire | IA Claude")
+            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Alertes temps réel")
 
             app.run_polling(
                 allowed_updates=Update.ALL_TYPES,
@@ -415,7 +469,7 @@ def main():
             )
 
         except Exception as e:
-            logger.warning(f"⚠️ Erreur, redémarrage dans 20s : {e}")
+            logger.warning(f"⚠️ Redémarrage dans 20s : {e}")
             time.sleep(20)
             continue
         break
