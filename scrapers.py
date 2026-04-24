@@ -1,406 +1,313 @@
 import os
-import requests
+import json
+import re
 import time
 import random
 import logging
-import json
-import re
-from config import (
-    BRANDS, MIN_PRICE, MAX_PRICE,
-    HYPE_KEYWORDS,
-)
-from ai_scorer import analyze_article
+import requests
+from config import BRANDS, MIN_PRICE, MAX_PRICE, HARD_EXCLUDES, SCRAPFLY_KEY
+from ai_scorer import is_worth_buying
 
 logger = logging.getLogger(__name__)
 
-MAX_ARTICLES_PER_SOURCE = 10
-SCRAPFLY_KEY = os.environ.get("SCRAPFLY_KEY", "")
+MAX_PER_SOURCE = 15
 
 
 # ──────────────────────────────────────────
-# PRIX
+# UTILITAIRES
 # ──────────────────────────────────────────
 
-def parse_price(price_raw) -> float | None:
+def parse_price(raw) -> float | None:
     try:
-        if isinstance(price_raw, dict):
-            val = price_raw.get("amount") or price_raw.get("value", "")
+        if isinstance(raw, dict):
+            v = raw.get("amount") or raw.get("value") or raw.get("cents", 0)
+            if raw.get("cents"):
+                return float(v) / 100
         else:
-            val = price_raw
-        return float(str(val).replace(",", ".").replace("€", "").replace(" ", "").strip())
+            v = raw
+        return float(str(v).replace(",", ".").replace("€", "").replace(" ", ""))
     except Exception:
         return None
 
-def price_ok(price_raw) -> bool:
-    price = parse_price(price_raw)
-    if price is None:
-        return False
-    return MIN_PRICE <= price <= MAX_PRICE
+
+def price_ok(raw) -> bool:
+    p = parse_price(raw)
+    return p is not None and MIN_PRICE <= p <= MAX_PRICE
 
 
-# ──────────────────────────────────────────
-# HYPE
-# ──────────────────────────────────────────
-
-def is_hype(title: str, description: str = "") -> bool:
-    text = (title + " " + description).lower()
-    return any(kw.lower() in text for kw in HYPE_KEYWORDS)
-
-
-# ──────────────────────────────────────────
-# FILTRE MINIMAL
-# ──────────────────────────────────────────
-
-def is_relevant(title: str, brand: str) -> bool:
+def title_ok(title: str, brand: str) -> bool:
     if not title or not brand:
         return False
-    title_lower = title.lower()
-    if brand.lower() not in title_lower:
+    tl = title.lower()
+    if brand.lower() not in tl:
         return False
-    hard_excludes = [
-        "parfum", "perfume", "cologne", "eau de",
-        "iphone", "samsung", "ordinateur", "laptop",
-        "voiture", "moto", "vélo", "jouet", "toy",
-        "livre", "book", "dvd",
-    ]
-    for kw in hard_excludes:
-        if kw in title_lower:
+    for kw in HARD_EXCLUDES:
+        if kw in tl:
             return False
     return True
 
 
-# ──────────────────────────────────────────
-# VINTED via ScrapFly
-# ──────────────────────────────────────────
-
-def search_vinted(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
-                  max_articles=MAX_ARTICLES_PER_SOURCE):
+def scrapfly_get(url: str, render_js: bool = False) -> str | None:
+    """Appel ScrapFly avec anti-bot."""
     if not SCRAPFLY_KEY:
-        logger.warning("[Vinted] SCRAPFLY_KEY manquante")
-        return []
-
-    results = []
-    candidates = []
-
+        return None
     try:
-        for page in range(1, 4):
-            vinted_url = (
-                f"https://www.vinted.fr/catalog?"
-                f"search_text={brand.replace(' ', '+')}"
-                f"&price_from={min_price}"
-                f"&price_to={max_price}"
-                f"&currency=EUR"
-                f"&page={page}"
-                f"&order=relevance"
-            )
+        params = {
+            "key": SCRAPFLY_KEY,
+            "url": url,
+            "asp": "true",
+            "country": "fr",
+        }
+        if render_js:
+            params["render_js"] = "true"
 
-            r = requests.get(
-                "https://api.scrapfly.io/scrape",
-                params={
-                    "key": SCRAPFLY_KEY,
-                    "url": vinted_url,
-                    "asp": "true",
-                    "render_js": "true",
-                    "country": "fr",
-                },
-                timeout=30,
-            )
-
-            if r.status_code != 200:
-                logger.warning(f"[Vinted] ScrapFly status {r.status_code}")
-                break
-
-            html = r.json().get("result", {}).get("content", "")
-            if not html:
-                logger.warning(f"[Vinted] Contenu vide page {page}")
-                break
-
-            match = re.search(
-                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-                html, re.DOTALL
-            )
-            if not match:
-                logger.warning(f"[Vinted] __NEXT_DATA__ introuvable page {page}")
-                break
-
-            try:
-                next_data = json.loads(match.group(1))
-                page_props = next_data.get("props", {}).get("pageProps", {})
-                logger.info(f"[Vinted] pageProps keys: {list(page_props.keys())[:10]}")
-
-                items = (
-                    page_props.get("catalogItems", {}).get("catalogItems", [])
-                    or page_props.get("items", [])
-                    or page_props.get("initialState", {}).get("catalog", {}).get("items", [])
-                )
-                logger.info(f"[Vinted] Items trouvés: {len(items)}")
-
-            except Exception as e:
-                logger.warning(f"[Vinted] Parse erreur: {e}")
-                break
-
-            if not items:
-                break
-
-            for item in items:
-                title = item.get("title", "") or item.get("name", "")
-                price_raw = item.get("price", {})
-                if not price_ok(price_raw):
-                    continue
-                if not is_relevant(title, brand):
-                    continue
-                candidates.append(item)
-
-            if len(candidates) >= max_articles * 3:
-                break
-            time.sleep(1)
-
-        logger.info(f"[Vinted] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
-
-        for item in candidates[:max_articles]:
-            title = item.get("title", "") or item.get("name", "")
-            price_raw = item.get("price")
-            desc = item.get("description", "") or ""
-            parsed_price = parse_price(price_raw)
-            photo = item.get("photo") or {}
-            image_url = photo.get("url") or item.get("image", {}).get("url")
-            use_vision = is_hype(title, desc)
-
-            ai = analyze_article(
-                title=title,
-                brand=brand,
-                price=parsed_price or 0,
-                source="Vinted",
-                image_url=image_url if use_vision else None,
-            )
-
-            if not ai.get("keep", True):
-                logger.info(f"[Vinted] Ignoré: {title[:50]}")
-                continue
-
-            item_id = item.get("id", "")
-            results.append({
-                "title": title,
-                "price": parsed_price,
-                "url": f"https://www.vinted.fr/items/{item_id}",
-                "image": image_url,
-                "source": "Vinted",
-                "is_trending": ai.get("is_trending", False),
-                "is_hype": is_hype(title, desc) or ai.get("is_trending", False),
-                "is_runway": ai.get("is_runway", False),
-                "collection": ai.get("collection"),
-                "ai_verdict": ai.get("verdict", "correct"),
-                "ai_reason": ai.get("reason", ""),
-                "market_value": ai.get("market_value"),
-                "liquidity": ai.get("liquidity", "normale"),
-                "risk": ai.get("risk", "moyen"),
-            })
-
-        seen = set()
-        unique = []
-        for item in results:
-            if item["url"] not in seen:
-                seen.add(item["url"])
-                unique.append(item)
-
-        logger.info(f"[Vinted] {len(unique)} articles validés pour '{brand}'")
-        return unique
-
+        r = requests.get(
+            "https://api.scrapfly.io/scrape",
+            params=params,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            logger.warning(f"[ScrapFly] Status {r.status_code} pour {url[:60]}")
+            return None
+        return r.json().get("result", {}).get("content", "")
     except Exception as e:
-        logger.error(f"[Vinted] Erreur '{brand}': {e}")
-        return []
+        logger.error(f"[ScrapFly] {e}")
+        return None
 
 
-# ──────────────────────────────────────────
-# VESTIAIRE COLLECTIVE via ScrapFly
-# ──────────────────────────────────────────
-
-def search_vestiaire(brand: str, min_price=MIN_PRICE, max_price=MAX_PRICE,
-                     max_articles=MAX_ARTICLES_PER_SOURCE):
-    if not SCRAPFLY_KEY:
-        logger.warning("[VC] SCRAPFLY_KEY manquante")
-        return []
-
-    results = []
-    candidates = []
-
+def extract_next_data(html: str) -> dict:
+    """Extrait __NEXT_DATA__ d'une page HTML."""
+    if not html:
+        return {}
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if not m:
+        return {}
     try:
-        for page in range(1, 4):
-            vc_url = (
-                f"https://www.vestiairecollective.com/search/"
-                f"?q={brand.replace(' ', '+')}"
-                f"&priceMin={min_price}"
-                f"&priceMax={max_price}"
-                f"&page={page}"
-            )
+        return json.loads(m.group(1))
+    except Exception:
+        return {}
 
-            r = requests.get(
-                "https://api.scrapfly.io/scrape",
-                params={
-                    "key": SCRAPFLY_KEY,
-                    "url": vc_url,
-                    "asp": "true",
-                    "render_js": "true",
-                    "country": "fr",
-                },
-                timeout=30,
-            )
 
-            if r.status_code != 200:
-                logger.warning(f"[VC] ScrapFly status {r.status_code}")
-                break
+def build_result(title, price, url, image, source, brand) -> dict | None:
+    """Appelle l'IA et retourne l'article si keep=True."""
+    ai = is_worth_buying(title, brand, price or 0, source)
+    if not ai.get("keep", True):
+        logger.info(f"[{source}] Rejeté: {title[:50]}")
+        return None
 
-            html = r.json().get("result", {}).get("content", "")
-            if not html:
-                logger.warning(f"[VC] Contenu vide page {page}")
-                break
+    market_value = ai.get("market_value")
+    profit_net = None
+    if market_value and price:
+        try:
+            profit_net = round(float(market_value) - float(price) - float(market_value) * 0.15, 0)
+        except Exception:
+            pass
 
-            match = re.search(
-                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-                html, re.DOTALL
-            )
-            if not match:
-                logger.warning(f"[VC] __NEXT_DATA__ introuvable page {page}")
-                break
+    return {
+        "title": title,
+        "price": price,
+        "url": url,
+        "image": image,
+        "source": source,
+        "ai_reason": ai.get("reason", ""),
+        "ai_verdict": ai.get("verdict", "correct"),
+        "market_value": market_value,
+        "profit_net": profit_net,
+    }
 
-            try:
-                next_data = json.loads(match.group(1))
-                page_props = next_data.get("props", {}).get("pageProps", {})
-                logger.info(f"[VC] pageProps keys: {list(page_props.keys())[:10]}")
 
-                items = []
+# ──────────────────────────────────────────
+# VINTED
+# ──────────────────────────────────────────
 
-                # Structure 1 — dehydratedState (React Query)
-                dehydrated = page_props.get("dehydratedState", {})
-                if dehydrated:
-                    queries = dehydrated.get("queries", [])
-                    for query in queries:
-                        data = query.get("state", {}).get("data", {})
-                        if isinstance(data, dict):
-                            potential = (
-                                data.get("items", [])
-                                or data.get("products", [])
-                                or data.get("results", [])
-                            )
-                            if potential:
-                                items = potential
-                                break
+def search_vinted(brand: str) -> list:
+    results = []
+    logger.info(f"[Vinted] Recherche '{brand}'...")
 
-                # Structure 2 — pageProps directs
-                if not items:
-                    items = (
-                        page_props.get("initialData", {}).get("items", [])
-                        or page_props.get("search", {}).get("items", [])
-                        or page_props.get("products", [])
-                        or page_props.get("items", [])
-                    )
+    for page in range(1, 4):
+        url = (
+            f"https://www.vinted.fr/catalog"
+            f"?search_text={brand.replace(' ', '+')}"
+            f"&price_from={MIN_PRICE}&price_to={MAX_PRICE}"
+            f"&currency=EUR&page={page}&order=newest_first"
+        )
 
-                logger.info(f"[VC] Items trouvés: {len(items)}")
+        html = scrapfly_get(url, render_js=True)
+        if not html:
+            break
 
-            except Exception as e:
-                logger.warning(f"[VC] Parsing JSON: {e}")
-                break
+        nd = extract_next_data(html)
+        if not nd:
+            logger.warning(f"[Vinted] Pas de __NEXT_DATA__ page {page}")
+            break
 
-            if not items:
-                logger.info(f"[VC] Aucun article page {page}")
-                break
+        # Cherche les items dans plusieurs structures possibles
+        page_props = nd.get("props", {}).get("pageProps", {})
+        items = []
 
-            for item in items:
+        # Structure 1 — catalogItems
+        ci = page_props.get("catalogItems", {})
+        if ci:
+            items = ci.get("catalogItems", ci.get("items", []))
+
+        # Structure 2 — items directs
+        if not items:
+            items = page_props.get("items", [])
+
+        # Structure 3 — initialState
+        if not items:
+            state = page_props.get("initialState", {})
+            items = state.get("catalog", {}).get("items", [])
+
+        # Structure 4 — cherche dans tout le JSON
+        if not items:
+            raw = json.dumps(nd)
+            matches = re.findall(r'"catalogItems":\s*(\[.*?\])', raw, re.DOTALL)
+            for m in matches:
                 try:
-                    price_obj = item.get("price", {})
-                    if isinstance(price_obj, dict):
-                        price_raw = price_obj.get("cents", 0) / 100
-                    else:
-                        price_raw = price_obj
-
-                    if not price_raw or not price_ok(price_raw):
-                        continue
-
-                    title = item.get("name", "") or item.get("title", "")
-                    if not is_relevant(title, brand):
-                        continue
-
-                    link = item.get("link", item.get("url", ""))
-                    image = None
-                    if item.get("pictures"):
-                        image = item["pictures"][0].get("url")
-                    elif item.get("picture"):
-                        image = item["picture"].get("url")
-
-                    candidates.append({
-                        "title": title,
-                        "price": parse_price(price_raw),
-                        "url": (
-                            "https://www.vestiairecollective.com" + link
-                            if link.startswith("/") else link
-                        ),
-                        "image": image,
-                    })
+                    items = json.loads(m)
+                    if items:
+                        break
                 except Exception:
                     continue
 
-            if len(candidates) >= max_articles * 3:
-                break
-            time.sleep(2)
+        logger.info(f"[Vinted] Page {page}: {len(items)} items bruts")
 
-        logger.info(f"[VC] {len(candidates)} candidats → analyse {min(len(candidates), max_articles)}")
-
-        for item in candidates[:max_articles]:
+        for item in items:
             title = item.get("title", "")
-            parsed_price = item.get("price")
-            image_url = item.get("image")
-            use_vision = is_hype(title)
-
-            ai = analyze_article(
-                title=title,
-                brand=brand,
-                price=parsed_price or 0,
-                source="Vestiaire Collective",
-                image_url=image_url if use_vision else None,
-            )
-
-            if not ai.get("keep", True):
-                logger.info(f"[VC] Ignoré: {title[:50]}")
+            price_raw = item.get("price")
+            if not title_ok(title, brand) or not price_ok(price_raw):
                 continue
 
-            results.append({
-                "title": title,
-                "price": parsed_price,
-                "url": item.get("url"),
-                "image": image_url,
-                "source": "Vestiaire Collective",
-                "is_trending": ai.get("is_trending", False),
-                "is_hype": is_hype(title) or ai.get("is_trending", False),
-                "is_runway": ai.get("is_runway", False),
-                "collection": ai.get("collection"),
-                "ai_verdict": ai.get("verdict", "correct"),
-                "ai_reason": ai.get("reason", ""),
-                "market_value": ai.get("market_value"),
-                "liquidity": ai.get("liquidity", "normale"),
-                "risk": ai.get("risk", "moyen"),
-            })
+            price = parse_price(price_raw)
+            photo = item.get("photo") or {}
+            image = photo.get("url") or photo.get("full_size_url")
+            item_id = item.get("id", "")
+            url_item = f"https://www.vinted.fr/items/{item_id}"
 
-        seen = set()
-        unique = []
-        for item in results:
-            if item.get("url") and item["url"] not in seen:
-                seen.add(item["url"])
-                unique.append(item)
+            r = build_result(title, price, url_item, image, "Vinted", brand)
+            if r:
+                results.append(r)
+                if len(results) >= MAX_PER_SOURCE:
+                    return results
 
-        logger.info(f"[VC] {len(unique)} articles validés pour '{brand}'")
-        return unique
+        time.sleep(random.uniform(1, 2))
 
-    except Exception as e:
-        logger.error(f"[VC] Erreur '{brand}': {e}")
-        return []
+    logger.info(f"[Vinted] {len(results)} articles retenus pour '{brand}'")
+    return results
+
+
+# ──────────────────────────────────────────
+# VESTIAIRE COLLECTIVE
+# ──────────────────────────────────────────
+
+def search_vestiaire(brand: str) -> list:
+    results = []
+    logger.info(f"[VC] Recherche '{brand}'...")
+
+    for page in range(1, 4):
+        url = (
+            f"https://www.vestiairecollective.com/search/"
+            f"?q={brand.replace(' ', '+')}"
+            f"&priceMin={MIN_PRICE}&priceMax={MAX_PRICE}&page={page}"
+        )
+
+        html = scrapfly_get(url, render_js=True)
+        if not html:
+            break
+
+        nd = extract_next_data(html)
+        if not nd:
+            logger.warning(f"[VC] Pas de __NEXT_DATA__ page {page}")
+            break
+
+        page_props = nd.get("props", {}).get("pageProps", {})
+        items = []
+
+        # Structure 1 — dehydratedState (React Query)
+        dehydrated = page_props.get("dehydratedState", {})
+        if dehydrated:
+            for query in dehydrated.get("queries", []):
+                data = query.get("state", {}).get("data", {})
+                if isinstance(data, dict):
+                    for key in ["items", "products", "results", "catalogItems"]:
+                        candidate = data.get(key, [])
+                        if candidate and isinstance(candidate, list):
+                            items = candidate
+                            break
+                if items:
+                    break
+
+        # Structure 2 — pageProps directs
+        if not items:
+            for key in ["items", "products", "catalogItems"]:
+                items = page_props.get(key, [])
+                if items:
+                    break
+
+        # Structure 3 — cherche dans tout le JSON
+        if not items:
+            raw = json.dumps(nd)
+            for pattern in [r'"items":\s*(\[.*?\])', r'"products":\s*(\[.*?\])']:
+                matches = re.findall(pattern, raw, re.DOTALL)
+                for m in matches:
+                    try:
+                        candidate = json.loads(m)
+                        if candidate and len(candidate) > 2:
+                            items = candidate
+                            break
+                    except Exception:
+                        continue
+                if items:
+                    break
+
+        logger.info(f"[VC] Page {page}: {len(items)} items bruts")
+
+        for item in items:
+            title = item.get("name", "") or item.get("title", "")
+            price_obj = item.get("price", {})
+
+            if isinstance(price_obj, dict):
+                cents = price_obj.get("cents")
+                if cents:
+                    price_raw = cents / 100
+                else:
+                    price_raw = price_obj.get("amount") or price_obj.get("value")
+            else:
+                price_raw = price_obj
+
+            if not title_ok(title, brand) or not price_ok(price_raw):
+                continue
+
+            price = parse_price(price_raw)
+            link = item.get("link", item.get("url", ""))
+            if link and not link.startswith("http"):
+                link = "https://www.vestiairecollective.com" + link
+
+            image = None
+            if item.get("pictures"):
+                image = item["pictures"][0].get("url")
+            elif item.get("picture"):
+                image = item["picture"].get("url")
+
+            r = build_result(title, price, link, image, "Vestiaire Collective", brand)
+            if r:
+                results.append(r)
+                if len(results) >= MAX_PER_SOURCE:
+                    return results
+
+        time.sleep(random.uniform(1.5, 2.5))
+
+    logger.info(f"[VC] {len(results)} articles retenus pour '{brand}'")
+    return results
 
 
 # ──────────────────────────────────────────
 # UNIFIÉ
 # ──────────────────────────────────────────
 
-def search_all_sources(brand: str, max_articles=MAX_ARTICLES_PER_SOURCE):
+def search_all(brand: str) -> list:
     all_results = []
-    all_results.extend(search_vinted(brand, max_articles=max_articles))
-    all_results.extend(search_vestiaire(brand, max_articles=max_articles))
+    all_results.extend(search_vinted(brand))
+    all_results.extend(search_vestiaire(brand))
     return all_results
