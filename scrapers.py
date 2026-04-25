@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 from config import MIN_PRICE, MAX_PRICE, HARD_EXCLUDES, EBAY_APP_ID, EBAY_CERT_ID
+from ai_scorer import analyze
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def title_ok(title: str, brand: str) -> bool:
 
 
 # ──────────────────────────────────────────
-# EBAY
+# EBAY TOKEN
 # ──────────────────────────────────────────
 
 _ebay_token = {"value": None, "expires": 0}
@@ -57,15 +58,18 @@ def get_ebay_token() -> str | None:
         )
         r.raise_for_status()
         data = r.json()
-        token = data.get("access_token")
-        expires = data.get("expires_in", 7200)
-        _ebay_token["value"] = token
-        _ebay_token["expires"] = time.time() + expires - 60
+        _ebay_token["value"] = data.get("access_token")
+        _ebay_token["expires"] = time.time() + data.get("expires_in", 7200) - 60
         logger.info("[eBay] Token obtenu")
-        return token
+        return _ebay_token["value"]
     except Exception as e:
         logger.error(f"[eBay] Token: {e}")
         return None
+
+
+# ──────────────────────────────────────────
+# EBAY + ANALYSE IA
+# ──────────────────────────────────────────
 
 def fetch_ebay_new(brand: str) -> list:
     logger.info(f"[eBay] Recherche '{brand}'...")
@@ -73,6 +77,7 @@ def fetch_ebay_new(brand: str) -> list:
     token = get_ebay_token()
     if not token:
         return []
+
     try:
         params = {
             "q": brand,
@@ -93,14 +98,41 @@ def fetch_ebay_new(brand: str) -> list:
         for item in items:
             title = item.get("title", "")
             price_raw = item.get("price", {})
+
             if not title_ok(title, brand) or not price_ok(price_raw):
                 continue
+
             price = parse_price(price_raw)
             image = item.get("image", {}).get("imageUrl")
             url = item.get("itemWebUrl", "")
-            item_id = item.get("itemId", url)
+            item_id = str(item.get("itemId", url))
+
+            # Analyse IA complète
+            ai = analyze(title, brand, price or 0)
+
+            # Filtre : revendeur pro → skip
+            if ai.get("seller_type") == "pro":
+                logger.info(f"[eBay] Pro ignoré: {title[:50]}")
+                continue
+
+            # Filtre : non authentique → skip
+            if not ai.get("is_authentic", True):
+                logger.info(f"[eBay] Suspect ignoré: {title[:50]}")
+                continue
+
+            # Filtre : IA dit non rentable → skip
+            if not ai.get("keep", True):
+                logger.info(f"[eBay] Non rentable: {title[:50]}")
+                continue
+
+            # Vérif revente ≥ 2× prix
+            resale = ai.get("resale_value")
+            if resale and price and float(resale) < float(price) * 2:
+                logger.info(f"[eBay] Marge insuffisante ({price}€ → {resale}€): {title[:40]}")
+                continue
+
             results.append({
-                "id": str(item_id),
+                "id": item_id,
                 "title": title,
                 "price": price,
                 "size": "",
@@ -108,17 +140,20 @@ def fetch_ebay_new(brand: str) -> list:
                 "image": image,
                 "source": "eBay",
                 "brand": brand,
+                # Données IA
+                "resale_value": resale,
+                "ai_reason": ai.get("reason", ""),
+                "is_rare": ai.get("is_rare", False),
+                "is_runway": ai.get("is_runway", False),
+                "material_quality": ai.get("material_quality", "normale"),
             })
+
     except Exception as e:
         logger.error(f"[eBay] Erreur '{brand}': {e}")
 
-    logger.info(f"[eBay] {len(results)} articles valides pour '{brand}'")
+    logger.info(f"[eBay] {len(results)} articles retenus pour '{brand}'")
     return results
 
-
-# ──────────────────────────────────────────
-# UNIFIÉ
-# ──────────────────────────────────────────
 
 def fetch_new(brand: str) -> list:
     return fetch_ebay_new(brand)
