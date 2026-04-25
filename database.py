@@ -21,16 +21,16 @@ def init_db():
         _seen = set()
 
 
-def is_seen(url: str) -> bool:
-    return url in _seen
+def is_seen(uid: str) -> bool:
+    return uid in _seen
 
 
-def mark_seen(url: str):
-    if not url:
+def mark_seen(uid: str):
+    if not uid:
         return
-    _seen.add(url)
+    _seen.add(uid)
     try:
         with open(_FILE, "a") as f:
-            f.write(url + "\n")
+            f.write(uid + "\n")
     except Exception:
         pass
