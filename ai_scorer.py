@@ -9,20 +9,39 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 
-def is_worth_buying(title: str, brand: str, price: float, source: str) -> dict:
+def analyze(title: str, brand: str, price: float) -> dict:
     """
-    Question simple : vaut-il la peine d'acheter cet article pour le revendre ?
-    Retourne keep=True par défaut si l'IA est indisponible.
+    Analyse complète de l'article :
+    - Intérêt à la revente (×2 minimum)
+    - Authenticité
+    - Matière / qualité exceptionnelle
+    - Pièce d'archive, rare ou de défilé
+    - Vendeur particulier ou pro
     """
     if not ANTHROPIC_API_KEY:
         return _default()
 
     prompt = (
-        f"Expert en revente luxe. Article sur {source} :\n"
-        f"Marque: {brand} | Titre: {title} | Prix: {price}€\n\n"
-        f"Est-ce qu'acheter cet article à {price}€ permet de le revendre avec profit ?\n"
-        f"Réponds en JSON uniquement:\n"
-        f'{{"keep":true/false,"reason":"1 phrase","market_value":euros_ou_null,"verdict":"excellent/bon/correct/faible/suspect"}}'
+        f"Tu es un expert en mode luxe masculine et en revente.\n\n"
+        f"Article eBay :\n"
+        f"- Marque : {brand}\n"
+        f"- Titre : {title}\n"
+        f"- Prix : {price}€\n\n"
+        f"Analyse cet article selon ces 5 critères :\n\n"
+        f"1. RENTABILITÉ : Est-ce qu'on peut revendre cet article au moins 2× son prix d'achat ?\n"
+        f"   Base-toi sur les prix réels actuels sur Vestiaire Collective et The RealReal.\n\n"
+        f"2. AUTHENTICITÉ : Le titre semble-t-il authentique ? "
+        f"Y a-t-il des signaux d'alerte (orthographe, description vague, prix trop bas) ?\n\n"
+        f"3. MATIÈRE/QUALITÉ : S'agit-il d'une pièce exceptionnelle ? "
+        f"(cachemire, laine vierge, soie, tissu japonais, fait main, etc.)\n\n"
+        f"4. RARETÉ/ARCHIVE/DÉFILÉ : Cette pièce est-elle rare, d'archive ou de défilé ? "
+        f"Remonte toutes les collections de {brand} pour identifier cette pièce.\n\n"
+        f"5. TYPE DE VENDEUR : S'agit-il d'un particulier (titre simple, peu de stock) "
+        f"ou d'un revendeur pro (plusieurs annonces similaires, prix au marché) ?\n\n"
+        f"Réponds UNIQUEMENT en JSON valide :\n"
+        f'{{"keep":true/false,"resale_value":euros,"reason":"1 phrase synthèse",'
+        f'"is_authentic":true/false,"is_rare":false,"is_runway":false,'
+        f'"material_quality":"normale/bonne/exceptionnelle","seller_type":"particulier/pro"}}'
     )
 
     try:
@@ -35,7 +54,7 @@ def is_worth_buying(title: str, brand: str, price: float, source: str) -> dict:
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 200,
+                "max_tokens": 250,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=20,
@@ -48,7 +67,15 @@ def is_worth_buying(title: str, brand: str, price: float, source: str) -> dict:
         text = r.json()["content"][0]["text"].strip()
         text = text.replace("```json", "").replace("```", "").strip()
         result = json.loads(text)
-        logger.info(f"[AI] {brand} — keep={result.get('keep')} | {result.get('reason','')[:50]}")
+
+        logger.info(
+            f"[AI] {brand} | keep={result.get('keep')} | "
+            f"revente={result.get('resale_value')}€ | "
+            f"auth={result.get('is_authentic')} | "
+            f"rare={result.get('is_rare')} | "
+            f"vendeur={result.get('seller_type')} | "
+            f"{result.get('reason','')[:50]}"
+        )
         return result
 
     except Exception as e:
@@ -59,7 +86,11 @@ def is_worth_buying(title: str, brand: str, price: float, source: str) -> dict:
 def _default() -> dict:
     return {
         "keep": True,
+        "resale_value": None,
         "reason": "",
-        "market_value": None,
-        "verdict": "correct",
+        "is_authentic": True,
+        "is_rare": False,
+        "is_runway": False,
+        "material_quality": "normale",
+        "seller_type": "particulier",
     }
