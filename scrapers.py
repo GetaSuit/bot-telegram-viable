@@ -12,10 +12,6 @@ logger = logging.getLogger(__name__)
 MAX_PER_SOURCE = 20
 
 
-# ──────────────────────────────────────────
-# UTILITAIRES
-# ──────────────────────────────────────────
-
 def parse_price(raw) -> float | None:
     try:
         if isinstance(raw, dict):
@@ -43,34 +39,58 @@ def title_ok(title: str, brand: str) -> bool:
             return False
     return True
 
-def scrapfly_api(url: str, headers: dict = None) -> dict | None:
+
+# ──────────────────────────────────────────
+# SCRAPFLY — session en 2 étapes
+# ──────────────────────────────────────────
+
+def scrapfly_session_then_api(session_url: str, api_url: str, api_headers: dict) -> dict | None:
     """
-    Appelle ScrapFly pour contourner les blocages.
-    Utilisé pour les APIs JSON (pas le rendu JS).
+    Étape 1 : visite la page principale pour obtenir les cookies.
+    Étape 2 : appelle l'API avec ces cookies.
     """
     if not SCRAPFLY_KEY:
         logger.error("[ScrapFly] Clé manquante")
         return None
-    try:
-        params = {
-            "key": SCRAPFLY_KEY,
-            "url": url,
-            "asp": "true",
-            "country": "fr",
-        }
-        if headers:
-            params["headers"] = json.dumps(headers)
 
-        r = requests.get(
+    try:
+        # Étape 1 — initialise la session
+        r1 = requests.get(
             "https://api.scrapfly.io/scrape",
-            params=params,
+            params={
+                "key": SCRAPFLY_KEY,
+                "url": session_url,
+                "asp": "true",
+                "render_js": "true",
+                "country": "fr",
+                "session": "vinted_session",
+            },
             timeout=30,
         )
-        if r.status_code != 200:
-            logger.warning(f"[ScrapFly] Status {r.status_code}")
+        if r1.status_code != 200:
+            logger.warning(f"[ScrapFly] Session init: {r1.status_code}")
             return None
 
-        content = r.json().get("result", {}).get("content", "")
+        time.sleep(2)
+
+        # Étape 2 — appelle l'API avec la session
+        r2 = requests.get(
+            "https://api.scrapfly.io/scrape",
+            params={
+                "key": SCRAPFLY_KEY,
+                "url": api_url,
+                "asp": "true",
+                "country": "fr",
+                "session": "vinted_session",
+                "headers": json.dumps(api_headers),
+            },
+            timeout=30,
+        )
+        if r2.status_code != 200:
+            logger.warning(f"[ScrapFly] API: {r2.status_code}")
+            return None
+
+        content = r2.json().get("result", {}).get("content", "")
         if not content:
             return None
 
@@ -81,29 +101,67 @@ def scrapfly_api(url: str, headers: dict = None) -> dict | None:
         return None
 
 
+def scrapfly_simple(url: str, headers: dict = None, render_js: bool = False) -> str | None:
+    """Appel ScrapFly simple."""
+    if not SCRAPFLY_KEY:
+        return None
+    try:
+        params = {
+            "key": SCRAPFLY_KEY,
+            "url": url,
+            "asp": "true",
+            "country": "fr",
+        }
+        if render_js:
+            params["render_js"] = "true"
+        if headers:
+            params["headers"] = json.dumps(headers)
+
+        r = requests.get(
+            "https://api.scrapfly.io/scrape",
+            params=params,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            logger.warning(f"[ScrapFly] {r.status_code} — {url[:60]}")
+            return None
+
+        return r.json().get("result", {}).get("content", "")
+    except Exception as e:
+        logger.error(f"[ScrapFly] {e}")
+        return None
+
+
 # ──────────────────────────────────────────
-# VINTED — API directe via ScrapFly
+# VINTED
 # ──────────────────────────────────────────
 
 def fetch_vinted_new(brand: str) -> list:
     logger.info(f"[Vinted] Recherche '{brand}'...")
 
-    url = (
+    api_url = (
         f"https://www.vinted.fr/api/v2/catalog/items"
         f"?search_text={brand.replace(' ', '%20')}"
         f"&price_from={MIN_PRICE}&price_to={MAX_PRICE}"
         f"&currency=EUR&per_page=50&page=1&order=newest_first"
     )
 
-    headers = {
+    api_headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "fr-FR,fr;q=0.9",
         "Origin": "https://www.vinted.fr",
-        "Referer": "https://www.vinted.fr/",
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+        "Referer": "https://www.vinted.fr/catalog",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
     }
 
-    data = scrapfly_api(url, headers)
+    data = scrapfly_session_then_api(
+        session_url="https://www.vinted.fr",
+        api_url=api_url,
+        api_headers=api_headers,
+    )
+
     if not data:
         logger.warning(f"[Vinted] Pas de données pour '{brand}'")
         return []
@@ -124,7 +182,7 @@ def fetch_vinted_new(brand: str) -> list:
         image = photo.get("url") or photo.get("full_size_url")
         item_id = str(item.get("id", ""))
 
-        size = item.get("size_title", "") or ""
+        size = item.get("size_title", "")
         if not size:
             sz = item.get("size", {})
             if isinstance(sz, dict):
@@ -146,44 +204,42 @@ def fetch_vinted_new(brand: str) -> list:
 
 
 # ──────────────────────────────────────────
-# VESTIAIRE COLLECTIVE — API directe via ScrapFly
+# VESTIAIRE COLLECTIVE
 # ──────────────────────────────────────────
 
 def fetch_vestiaire_new(brand: str) -> list:
     logger.info(f"[VC] Recherche '{brand}'...")
 
+    # Utilise l'API GraphQL/REST interne
     url = (
         f"https://www.vestiairecollective.com/api/product/search/v2/"
         f"?keywords={brand.replace(' ', '+')}"
         f"&priceMin={MIN_PRICE}&priceMax={MAX_PRICE}"
-        f"&sortBy=new&page=1&pageSize=50"
+        f"&sortBy=new&page=1&pageSize=50&country=FR&currency=EUR"
     )
 
     headers = {
         "Accept": "application/json",
         "Accept-Language": "fr-FR,fr;q=0.9",
-        "Referer": "https://www.vestiairecollective.com/search/",
+        "Origin": "https://www.vestiairecollective.com",
+        "Referer": f"https://www.vestiairecollective.com/search/?q={brand.replace(' ', '+')}",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "x-market": "FR",
+        "x-currency": "EUR",
     }
 
-    data = scrapfly_api(url, headers)
+    content = scrapfly_simple(url, headers=headers)
 
-    # Fallback sur l'API search alternative
-    if not data:
-        url2 = (
-            f"https://search.vestiairecollective.com/api/v1/catalog/query"
-            f"?query={brand.replace(' ', '+')}"
-            f"&priceMin={MIN_PRICE}&priceMax={MAX_PRICE}"
-            f"&sort=newest&page=1"
-        )
-        data = scrapfly_api(url2, headers)
-
-    if not data:
-        logger.warning(f"[VC] Pas de données pour '{brand}'")
+    if not content:
+        logger.warning(f"[VC] Pas de réponse pour '{brand}'")
         return []
 
-    # Cherche les items dans la réponse
+    try:
+        data = json.loads(content)
+    except Exception:
+        logger.warning(f"[VC] Réponse non-JSON pour '{brand}'")
+        return []
+
     items = (
         data.get("items", [])
         or data.get("products", [])
@@ -196,15 +252,13 @@ def fetch_vestiaire_new(brand: str) -> list:
 
     results = []
     for item in items:
-        title = item.get("name", "") or item.get("title", "") or item.get("description", "")
-        price_obj = item.get("price", {}) or item.get("priceEur", {})
+        title = item.get("name", "") or item.get("title", "")
+        price_obj = item.get("price", {})
 
         if isinstance(price_obj, dict):
             cents = price_obj.get("cents")
             price_raw = cents / 100 if cents else (
-                price_obj.get("amount")
-                or price_obj.get("value")
-                or price_obj.get("original")
+                price_obj.get("amount") or price_obj.get("value")
             )
         else:
             price_raw = price_obj
@@ -219,8 +273,9 @@ def fetch_vestiaire_new(brand: str) -> list:
 
         image = None
         pics = item.get("pictures", []) or item.get("images", [])
-        if pics and isinstance(pics, list):
-            image = pics[0].get("url") if isinstance(pics[0], dict) else pics[0]
+        if pics:
+            first = pics[0]
+            image = first.get("url") if isinstance(first, dict) else first
         elif item.get("picture"):
             pic = item["picture"]
             image = pic.get("url") if isinstance(pic, dict) else pic
@@ -232,10 +287,8 @@ def fetch_vestiaire_new(brand: str) -> list:
         elif isinstance(size, str):
             size_str = size
 
-        item_id = str(item.get("id", link))
-
         results.append({
-            "id": item_id,
+            "id": str(item.get("id", link)),
             "title": title,
             "price": price,
             "size": size_str,
