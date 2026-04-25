@@ -1,16 +1,34 @@
-import os
-import json
-import re
 import time
 import random
 import logging
 import requests
-from config import MIN_PRICE, MAX_PRICE, HARD_EXCLUDES, SCRAPFLY_KEY
+from config import MIN_PRICE, MAX_PRICE, HARD_EXCLUDES
 
 logger = logging.getLogger(__name__)
 
 MAX_PER_SOURCE = 20
 
+# Session Vinted persistante
+VINTED_SESSION = requests.Session()
+VINTED_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://www.vinted.fr",
+    "Referer": "https://www.vinted.fr/",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+})
+
+
+# ──────────────────────────────────────────
+# UTILITAIRES
+# ──────────────────────────────────────────
 
 def parse_price(raw) -> float | None:
     try:
@@ -39,97 +57,25 @@ def title_ok(title: str, brand: str) -> bool:
             return False
     return True
 
-
-# ──────────────────────────────────────────
-# SCRAPFLY — session en 2 étapes
-# ──────────────────────────────────────────
-
-def scrapfly_session_then_api(session_url: str, api_url: str, api_headers: dict) -> dict | None:
-    """
-    Étape 1 : visite la page principale pour obtenir les cookies.
-    Étape 2 : appelle l'API avec ces cookies.
-    """
-    if not SCRAPFLY_KEY:
-        logger.error("[ScrapFly] Clé manquante")
-        return None
-
+def init_vinted_session():
+    """Initialise les cookies Vinted."""
     try:
-        # Étape 1 — initialise la session
-        r1 = requests.get(
-            "https://api.scrapfly.io/scrape",
-            params={
-                "key": SCRAPFLY_KEY,
-                "url": session_url,
-                "asp": "true",
-                "render_js": "true",
-                "country": "fr",
-                "session": "vinted_session",
-            },
-            timeout=30,
+        r = VINTED_SESSION.get(
+            "https://www.vinted.fr",
+            timeout=10,
+            allow_redirects=True,
         )
-        if r1.status_code != 200:
-            logger.warning(f"[ScrapFly] Session init: {r1.status_code}")
-            return None
-
-        time.sleep(2)
-
-        # Étape 2 — appelle l'API avec la session
-        r2 = requests.get(
-            "https://api.scrapfly.io/scrape",
-            params={
-                "key": SCRAPFLY_KEY,
-                "url": api_url,
-                "asp": "true",
-                "country": "fr",
-                "session": "vinted_session",
-                "headers": json.dumps(api_headers),
-            },
-            timeout=30,
+        logger.info(f"[Vinted] Session init: {r.status_code}")
+        time.sleep(1)
+        # Récupère le token CSRF si présent
+        VINTED_SESSION.get(
+            "https://www.vinted.fr/api/v2/configurations",
+            timeout=10,
         )
-        if r2.status_code != 200:
-            logger.warning(f"[ScrapFly] API: {r2.status_code}")
-            return None
-
-        content = r2.json().get("result", {}).get("content", "")
-        if not content:
-            return None
-
-        return json.loads(content)
-
+        return True
     except Exception as e:
-        logger.error(f"[ScrapFly] {e}")
-        return None
-
-
-def scrapfly_simple(url: str, headers: dict = None, render_js: bool = False) -> str | None:
-    """Appel ScrapFly simple."""
-    if not SCRAPFLY_KEY:
-        return None
-    try:
-        params = {
-            "key": SCRAPFLY_KEY,
-            "url": url,
-            "asp": "true",
-            "country": "fr",
-        }
-        if render_js:
-            params["render_js"] = "true"
-        if headers:
-            params["headers"] = json.dumps(headers)
-
-        r = requests.get(
-            "https://api.scrapfly.io/scrape",
-            params=params,
-            timeout=30,
-        )
-        if r.status_code != 200:
-            logger.warning(f"[ScrapFly] {r.status_code} — {url[:60]}")
-            return None
-
-        return r.json().get("result", {}).get("content", "")
-    except Exception as e:
-        logger.error(f"[ScrapFly] {e}")
-        return None
+        logger.error(f"[Vinted] Init: {e}")
+        return False
 
 
 # ──────────────────────────────────────────
@@ -138,66 +84,85 @@ def scrapfly_simple(url: str, headers: dict = None, render_js: bool = False) -> 
 
 def fetch_vinted_new(brand: str) -> list:
     logger.info(f"[Vinted] Recherche '{brand}'...")
-
-    api_url = (
-        f"https://www.vinted.fr/api/v2/catalog/items"
-        f"?search_text={brand.replace(' ', '%20')}"
-        f"&price_from={MIN_PRICE}&price_to={MAX_PRICE}"
-        f"&currency=EUR&per_page=50&page=1&order=newest_first"
-    )
-
-    api_headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "fr-FR,fr;q=0.9",
-        "Origin": "https://www.vinted.fr",
-        "Referer": "https://www.vinted.fr/catalog",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-mode": "cors",
-    }
-
-    data = scrapfly_session_then_api(
-        session_url="https://www.vinted.fr",
-        api_url=api_url,
-        api_headers=api_headers,
-    )
-
-    if not data:
-        logger.warning(f"[Vinted] Pas de données pour '{brand}'")
-        return []
-
-    items = data.get("items", [])
-    logger.info(f"[Vinted] {len(items)} items bruts pour '{brand}'")
-
     results = []
-    for item in items:
-        title = item.get("title", "")
-        price_raw = item.get("price")
 
-        if not title_ok(title, brand) or not price_ok(price_raw):
-            continue
+    try:
+        init_vinted_session()
 
-        price = parse_price(price_raw)
-        photo = item.get("photo") or {}
-        image = photo.get("url") or photo.get("full_size_url")
-        item_id = str(item.get("id", ""))
+        params = {
+            "search_text": brand,
+            "price_from": MIN_PRICE,
+            "price_to": MAX_PRICE,
+            "currency": "EUR",
+            "per_page": 50,
+            "page": 1,
+            "order": "newest_first",
+        }
 
-        size = item.get("size_title", "")
-        if not size:
-            sz = item.get("size", {})
-            if isinstance(sz, dict):
-                size = sz.get("title", "") or sz.get("name", "")
+        r = VINTED_SESSION.get(
+            "https://www.vinted.fr/api/v2/catalog/items",
+            params=params,
+            timeout=15,
+        )
 
-        results.append({
-            "id": item_id,
-            "title": title,
-            "price": price,
-            "size": size,
-            "url": f"https://www.vinted.fr/items/{item_id}",
-            "image": image,
-            "source": "Vinted",
-            "brand": brand,
-        })
+        logger.info(f"[Vinted] Status: {r.status_code}")
+
+        if r.status_code == 401 or r.status_code == 403:
+            logger.warning(f"[Vinted] Bloqué ({r.status_code}) — réinit session")
+            init_vinted_session()
+            r = VINTED_SESSION.get(
+                "https://www.vinted.fr/api/v2/catalog/items",
+                params=params,
+                timeout=15,
+            )
+
+        if r.status_code != 200:
+            logger.warning(f"[Vinted] Status final: {r.status_code}")
+            return []
+
+        try:
+            data = r.json()
+        except Exception:
+            logger.warning("[Vinted] Réponse non-JSON")
+            return []
+
+        items = data.get("items", [])
+        logger.info(f"[Vinted] {len(items)} items bruts")
+
+        for item in items:
+            title = item.get("title", "")
+            price_raw = item.get("price")
+
+            if not title_ok(title, brand) or not price_ok(price_raw):
+                continue
+
+            price = parse_price(price_raw)
+            photo = item.get("photo") or {}
+            image = photo.get("url") or photo.get("full_size_url")
+            item_id = str(item.get("id", ""))
+
+            # Taille
+            size = item.get("size_title", "")
+            if not size:
+                sz = item.get("size", {})
+                if isinstance(sz, dict):
+                    size = sz.get("title", "") or sz.get("name", "")
+                elif isinstance(sz, str):
+                    size = sz
+
+            results.append({
+                "id": item_id,
+                "title": title,
+                "price": price,
+                "size": size,
+                "url": f"https://www.vinted.fr/items/{item_id}",
+                "image": image,
+                "source": "Vinted",
+                "brand": brand,
+            })
+
+    except Exception as e:
+        logger.error(f"[Vinted] Erreur '{brand}': {e}")
 
     logger.info(f"[Vinted] {len(results)} articles valides pour '{brand}'")
     return results
@@ -209,94 +174,108 @@ def fetch_vinted_new(brand: str) -> list:
 
 def fetch_vestiaire_new(brand: str) -> list:
     logger.info(f"[VC] Recherche '{brand}'...")
-
-    # Utilise l'API GraphQL/REST interne
-    url = (
-        f"https://www.vestiairecollective.com/api/product/search/v2/"
-        f"?keywords={brand.replace(' ', '+')}"
-        f"&priceMin={MIN_PRICE}&priceMax={MAX_PRICE}"
-        f"&sortBy=new&page=1&pageSize=50&country=FR&currency=EUR"
-    )
-
-    headers = {
-        "Accept": "application/json",
-        "Accept-Language": "fr-FR,fr;q=0.9",
-        "Origin": "https://www.vestiairecollective.com",
-        "Referer": f"https://www.vestiairecollective.com/search/?q={brand.replace(' ', '+')}",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "x-market": "FR",
-        "x-currency": "EUR",
-    }
-
-    content = scrapfly_simple(url, headers=headers)
-
-    if not content:
-        logger.warning(f"[VC] Pas de réponse pour '{brand}'")
-        return []
+    results = []
 
     try:
-        data = json.loads(content)
-    except Exception:
-        logger.warning(f"[VC] Réponse non-JSON pour '{brand}'")
-        return []
+        # API search Vestiaire
+        params = {
+            "q": brand,
+            "priceMin": MIN_PRICE,
+            "priceMax": MAX_PRICE,
+            "sortBy": "new",
+            "page": 1,
+            "pageSize": 50,
+            "country": "FR",
+            "currency": "EUR",
+        }
 
-    items = (
-        data.get("items", [])
-        or data.get("products", [])
-        or data.get("results", [])
-        or data.get("data", {}).get("items", [])
-        or data.get("data", {}).get("products", [])
-    )
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "fr-FR,fr;q=0.9",
+            "Referer": f"https://www.vestiairecollective.com/search/?q={brand.replace(' ', '+')}",
+            "Origin": "https://www.vestiairecollective.com",
+            "x-market": "FR",
+            "x-currency": "EUR",
+        }
 
-    logger.info(f"[VC] {len(items)} items bruts pour '{brand}'")
+        r = requests.get(
+            "https://www.vestiairecollective.com/api/product/search/v2/",
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
 
-    results = []
-    for item in items:
-        title = item.get("name", "") or item.get("title", "")
-        price_obj = item.get("price", {})
+        logger.info(f"[VC] Status: {r.status_code}")
 
-        if isinstance(price_obj, dict):
-            cents = price_obj.get("cents")
-            price_raw = cents / 100 if cents else (
-                price_obj.get("amount") or price_obj.get("value")
-            )
-        else:
-            price_raw = price_obj
+        if r.status_code != 200:
+            logger.warning(f"[VC] Échec API principale")
+            return []
 
-        if not title_ok(title, brand) or not price_ok(price_raw):
-            continue
+        try:
+            data = r.json()
+        except Exception:
+            logger.warning("[VC] Réponse non-JSON")
+            return []
 
-        price = parse_price(price_raw)
-        link = item.get("url", "") or item.get("link", "")
-        if link and not link.startswith("http"):
-            link = "https://www.vestiairecollective.com" + link
+        items = (
+            data.get("items", [])
+            or data.get("products", [])
+            or data.get("results", [])
+            or data.get("data", {}).get("items", [])
+        )
 
-        image = None
-        pics = item.get("pictures", []) or item.get("images", [])
-        if pics:
-            first = pics[0]
-            image = first.get("url") if isinstance(first, dict) else first
-        elif item.get("picture"):
-            pic = item["picture"]
-            image = pic.get("url") if isinstance(pic, dict) else pic
+        logger.info(f"[VC] {len(items)} items bruts")
 
-        size_str = ""
-        size = item.get("size", {})
-        if isinstance(size, dict):
-            size_str = size.get("name", "") or size.get("title", "")
-        elif isinstance(size, str):
-            size_str = size
+        for item in items:
+            title = item.get("name", "") or item.get("title", "")
+            price_obj = item.get("price", {})
 
-        results.append({
-            "id": str(item.get("id", link)),
-            "title": title,
-            "price": price,
-            "size": size_str,
-            "url": link,
-            "image": image,
-            "source": "Vestiaire Collective",
-            "brand": brand,
-        })
+            if isinstance(price_obj, dict):
+                cents = price_obj.get("cents")
+                price_raw = cents / 100 if cents else (
+                    price_obj.get("amount") or price_obj.get("value")
+                )
+            else:
+                price_raw = price_obj
+
+            if not title_ok(title, brand) or not price_ok(price_raw):
+                continue
+
+            price = parse_price(price_raw)
+            link = item.get("url", "") or item.get("link", "")
+            if link and not link.startswith("http"):
+                link = "https://www.vestiairecollective.com" + link
+
+            image = None
+            pics = item.get("pictures", []) or item.get("images", [])
+            if pics:
+                first = pics[0]
+                image = first.get("url") if isinstance(first, dict) else first
+            elif item.get("picture"):
+                pic = item["picture"]
+                image = pic.get("url") if isinstance(pic, dict) else pic
+
+            size_str = ""
+            size = item.get("size", {})
+            if isinstance(size, dict):
+                size_str = size.get("name", "") or size.get("title", "")
+            elif isinstance(size, str):
+                size_str = size
+
+            results.append({
+                "id": str(item.get("id", link)),
+                "title": title,
+                "price": price,
+                "size": size_str,
+                "url": link,
+                "image": image,
+                "source": "Vestiaire Collective",
+                "brand": brand,
+            })
+
+    except Exception as e:
+        logger.error(f"[VC] Erreur '{brand}': {e}")
 
     logger.info(f"[VC] {len(results)} articles valides pour '{brand}'")
     return results
