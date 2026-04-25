@@ -1,19 +1,18 @@
 import os
 
-# ── Tokens
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-SCRAPFLY_KEY = os.environ.get("SCRAPFLY_KEY", "")
 
-# ── Paramètres sourcing
 MIN_PRICE = 70
 MAX_PRICE = 400
 
-# ── Tailles acceptées
-TARGET_SIZES = ["46", "48", "50", "52", "M", "L", "XL"]
+HARD_EXCLUDES = [
+    "parfum", "perfume", "cologne", "eau de toilette",
+    "iphone", "samsung", "ordinateur", "laptop", "tablette",
+    "voiture", "moto", "vélo", "jouet", "livre", "dvd",
+]
 
-# ── Marques surveillées
 BRANDS = [
     "Hermès", "Chanel", "Louis Vuitton", "Dior", "Brioni",
     "Kiton", "Loro Piana", "Berluti", "Cesare Attolini", "Stefano Ricci",
@@ -24,12 +23,5 @@ BRANDS = [
     "Valentino", "Versace", "Dolce & Gabbana",
     "Brunello Cucinelli", "Ami Paris",
     "Celine", "Loewe", "Fendi", "Balmain", "Acne Studios",
-    "Vivienne Westwood", "Mika",
-]
-
-# ── Mots absolument exclus
-HARD_EXCLUDES = [
-    "parfum", "perfume", "cologne", "eau de toilette",
-    "iphone", "samsung", "ordinateur", "laptop", "tablette",
-    "voiture", "moto", "vélo", "jouet", "livre", "dvd",
+    "Vivienne Westwood",
 ]
