@@ -53,16 +53,45 @@ def format_alert(item: dict) -> str:
     title = item.get("title", "?")
     brand = item.get("brand", "?")
     price = item.get("price", "?")
-    size = item.get("size", "")
     source = item.get("source", "?")
     url = item.get("url", "")
-    size_line = f"📐 *Taille* : {size}\n" if size else ""
+    resale = item.get("resale_value")
+    reason = item.get("ai_reason", "")
+    is_rare = item.get("is_rare", False)
+    is_runway = item.get("is_runway", False)
+    material = item.get("material_quality", "normale")
+
+    # Badges
+    badges = ""
+    if is_runway:
+        badges += "🎭 *Pièce de défilé*\n"
+    if is_rare:
+        badges += "💎 *Pièce rare / archive*\n"
+    if material == "exceptionnelle":
+        badges += "✨ *Matière exceptionnelle*\n"
+
+    # Profit
+    profit_line = ""
+    if resale and price:
+        try:
+            profit = float(resale) - float(price)
+            profit_line = (
+                f"💹 *Revente estimée* : ~{float(resale):.0f}€\n"
+                f"📊 *Profit potentiel* : +{profit:.0f}€\n"
+            )
+        except Exception:
+            profit_line = f"💹 *Revente estimée* : ~{resale}€\n"
+
+    reason_line = f"🤖 _{reason}_\n\n" if reason else ""
+
     return (
         f"🔔 *NOUVELLE ANNONCE*\n\n"
+        f"{badges}"
         f"🏷️ *{brand}*\n"
         f"_{title}_\n\n"
-        f"💰 *{price}€*\n"
-        f"{size_line}"
+        f"💰 *Prix* : {price}€\n"
+        f"{profit_line}"
+        f"{reason_line}"
         f"📦 {source}\n\n"
         f"🔗 [Voir l'annonce]({url})"
     )
