@@ -1,6 +1,5 @@
 import base64
 import time
-import random
 import logging
 import requests
 from config import MIN_PRICE, MAX_PRICE, HARD_EXCLUDES, EBAY_APP_ID, EBAY_CERT_ID
@@ -71,11 +70,9 @@ def get_ebay_token() -> str | None:
 def fetch_ebay_new(brand: str) -> list:
     logger.info(f"[eBay] Recherche '{brand}'...")
     results = []
-
     token = get_ebay_token()
     if not token:
         return []
-
     try:
         params = {
             "q": brand,
@@ -96,15 +93,12 @@ def fetch_ebay_new(brand: str) -> list:
         for item in items:
             title = item.get("title", "")
             price_raw = item.get("price", {})
-
             if not title_ok(title, brand) or not price_ok(price_raw):
                 continue
-
             price = parse_price(price_raw)
             image = item.get("image", {}).get("imageUrl")
             url = item.get("itemWebUrl", "")
             item_id = item.get("itemId", url)
-
             results.append({
                 "id": str(item_id),
                 "title": title,
@@ -115,7 +109,6 @@ def fetch_ebay_new(brand: str) -> list:
                 "source": "eBay",
                 "brand": brand,
             })
-
     except Exception as e:
         logger.error(f"[eBay] Erreur '{brand}': {e}")
 
@@ -124,104 +117,8 @@ def fetch_ebay_new(brand: str) -> list:
 
 
 # ──────────────────────────────────────────
-# VINTED
-# ──────────────────────────────────────────
-
-VINTED_SESSION = requests.Session()
-VINTED_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-FR,fr;q=0.9",
-    "Origin": "https://www.vinted.fr",
-    "Referer": "https://www.vinted.fr/",
-    "sec-fetch-site": "same-origin",
-    "sec-fetch-mode": "cors",
-})
-_vinted_init_done = {"done": False}
-
-def init_vinted():
-    if _vinted_init_done["done"]:
-        return
-    try:
-        VINTED_SESSION.get("https://www.vinted.fr", timeout=10)
-        time.sleep(1)
-        VINTED_SESSION.get("https://www.vinted.fr/api/v2/configurations", timeout=10)
-        _vinted_init_done["done"] = True
-        logger.info("[Vinted] Session initialisée")
-    except Exception as e:
-        logger.warning(f"[Vinted] Init: {e}")
-
-def fetch_vinted_new(brand: str) -> list:
-    logger.info(f"[Vinted] Recherche '{brand}'...")
-    results = []
-
-    try:
-        init_vinted()
-        params = {
-            "search_text": brand,
-            "price_from": MIN_PRICE,
-            "price_to": MAX_PRICE,
-            "currency": "EUR",
-            "per_page": 50,
-            "page": 1,
-            "order": "newest_first",
-        }
-        r = VINTED_SESSION.get(
-            "https://www.vinted.fr/api/v2/catalog/items",
-            params=params,
-            timeout=15,
-        )
-        logger.info(f"[Vinted] Status: {r.status_code}")
-
-        if r.status_code != 200:
-            logger.warning(f"[Vinted] Bloqué: {r.status_code}")
-            return []
-
-        items = r.json().get("items", [])
-        logger.info(f"[Vinted] {len(items)} items bruts")
-
-        for item in items:
-            title = item.get("title", "")
-            price_raw = item.get("price")
-            if not title_ok(title, brand) or not price_ok(price_raw):
-                continue
-
-            price = parse_price(price_raw)
-            photo = item.get("photo") or {}
-            image = photo.get("url")
-            item_id = str(item.get("id", ""))
-
-            size = item.get("size_title", "")
-            if not size:
-                sz = item.get("size", {})
-                if isinstance(sz, dict):
-                    size = sz.get("title", "")
-
-            results.append({
-                "id": item_id,
-                "title": title,
-                "price": price,
-                "size": size,
-                "url": f"https://www.vinted.fr/items/{item_id}",
-                "image": image,
-                "source": "Vinted",
-                "brand": brand,
-            })
-
-    except Exception as e:
-        logger.error(f"[Vinted] Erreur '{brand}': {e}")
-
-    logger.info(f"[Vinted] {len(results)} articles valides pour '{brand}'")
-    return results
-
-
-# ──────────────────────────────────────────
 # UNIFIÉ
 # ──────────────────────────────────────────
 
 def fetch_new(brand: str) -> list:
-    results = []
-    results.extend(fetch_ebay_new(brand))
-    time.sleep(random.uniform(0.5, 1))
-    results.extend(fetch_vinted_new(brand))
-    return results
+    return fetch_ebay_new(brand)
