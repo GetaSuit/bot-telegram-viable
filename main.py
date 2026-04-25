@@ -1,6 +1,6 @@
 """
 main.py — GetaSuit Sourcing Bot
-Alertes en temps réel — Vinted + Vestiaire Collective
+Alertes en temps réel — eBay + Vinted
 python-telegram-bot 20.6 | Render.com
 """
 
@@ -15,7 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotComm
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from config import TELEGRAM_TOKEN, CHAT_ID, BRANDS, MIN_PRICE, MAX_PRICE
-from scrapers import fetch_new, fetch_vinted_new, fetch_vestiaire_new
+from scrapers import fetch_new, fetch_ebay_new, fetch_vinted_new
 from database import init_db, is_seen, mark_seen
 
 logging.basicConfig(
@@ -24,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Intervalle de surveillance en secondes (5 min)
 WATCH_INTERVAL = 300
 _watching = {"active": False}
 _watch_task = {"task": None}
@@ -57,9 +56,7 @@ def format_alert(item: dict) -> str:
     size = item.get("size", "")
     source = item.get("source", "?")
     url = item.get("url", "")
-
     size_line = f"📐 *Taille* : {size}\n" if size else ""
-
     return (
         f"🔔 *NOUVELLE ANNONCE*\n\n"
         f"🏷️ *{brand}*\n"
@@ -100,7 +97,7 @@ async def send_alert(bot, item: dict):
                 reply_markup=kbd,
             )
     except Exception as e:
-        logger.warning(f"[alert] {e}")
+        logger.warning(f"[alert] photo failed: {e}")
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
@@ -109,44 +106,36 @@ async def send_alert(bot, item: dict):
                 reply_markup=kbd,
             )
         except Exception as e2:
-            logger.error(f"[alert] fallback: {e2}")
+            logger.error(f"[alert] fallback failed: {e2}")
 
 
 # ──────────────────────────────────────────
-# BOUCLE DE SURVEILLANCE
+# SURVEILLANCE
 # ──────────────────────────────────────────
 
 async def watch_loop(bot):
-    """Surveille toutes les marques en rotation et alerte dès qu'un nouvel article apparaît."""
     logger.info("👁️ Surveillance démarrée")
     cursor = 0
-
     while _watching["active"]:
         brand = BRANDS[cursor % len(BRANDS)]
         cursor += 1
-
         try:
             items = fetch_new(brand)
             new_items = [i for i in items if not is_seen(i.get("id", i.get("url", "")))]
-
             for item in new_items:
                 uid = item.get("id", item.get("url", ""))
                 mark_seen(uid)
                 await send_alert(bot, item)
-                logger.info(f"🔔 Alerte envoyée : {item.get('title','')[:50]} — {item.get('price')}€")
+                logger.info(f"🔔 {item.get('brand')} — {item.get('title','')[:40]} — {item.get('price')}€")
                 await asyncio.sleep(2)
-
         except Exception as e:
-            logger.error(f"[watch] Erreur '{brand}': {e}")
-
-        # Pause entre chaque marque
+            logger.error(f"[watch] '{brand}': {e}")
         await asyncio.sleep(WATCH_INTERVAL / len(BRANDS))
-
     logger.info("👁️ Surveillance arrêtée")
 
 
 # ──────────────────────────────────────────
-# COMMANDES
+# BOUTONS MARQUES
 # ──────────────────────────────────────────
 
 def brand_buttons() -> list:
@@ -160,6 +149,11 @@ def brand_buttons() -> list:
     if row:
         buttons.append(row)
     return buttons
+
+
+# ──────────────────────────────────────────
+# COMMANDES
+# ──────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "🟢 Active" if _watching["active"] else "🔴 Inactive"
@@ -177,7 +171,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❓ Aide", callback_data="help"),
         ],
     ]
-
     await update.message.reply_text(
         "┌──────────────────────────────┐\n"
         "│     👑  GETASUIT SOURCING    │\n"
@@ -185,7 +178,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "└──────────────────────────────┘\n\n"
         f"📡 *Surveillance* : {status}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 *Sources* : Vinted · Vestiaire\n"
+        f"📦 *Sources* : eBay · Vinted\n"
         f"💶 *Budget* : {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ *Maisons* : {len(BRANDS)} surveillées\n"
         f"⏱️ *Check* : toutes les {WATCH_INTERVAL//60} min\n"
@@ -197,7 +190,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Active la surveillance."""
     if _watching["active"]:
         await update.message.reply_text("👁️ La surveillance est déjà active.")
         return
@@ -205,26 +197,23 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = asyncio.create_task(watch_loop(context.bot))
     _watch_task["task"] = task
     await update.message.reply_text(
-        "✅ *Surveillance activée*\n\n"
-        f"Je surveille {len(BRANDS)} marques sur Vinted et Vestiaire.\n"
+        f"✅ *Surveillance activée*\n\n"
+        f"Je surveille {len(BRANDS)} marques sur eBay et Vinted.\n"
         f"Tu recevras une alerte dès qu'un nouvel article apparaît.\n\n"
         f"_Check toutes les {WATCH_INTERVAL//60} min_",
         parse_mode="Markdown",
     )
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Désactive la surveillance."""
     _watching["active"] = False
     if _watch_task.get("task"):
         _watch_task["task"].cancel()
     await update.message.reply_text(
-        "⏹️ *Surveillance désactivée*\n\n"
-        "Utilise /watch pour la réactiver.",
+        "⏹️ *Surveillance désactivée*\n\nUtilise /watch pour la réactiver.",
         parse_mode="Markdown",
     )
 
 async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Recherche manuelle immédiate sur une marque."""
     if not context.args:
         await update.message.reply_text(
             "🔎 Usage : `/chercher Hermès`\n\nOu choisis une marque :",
@@ -232,7 +221,6 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(brand_buttons()),
         )
         return
-
     brand = " ".join(context.args)
     match = next((b for b in BRANDS if b.lower() == brand.lower()), None)
     if not match:
@@ -241,28 +229,23 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         return
-
     await update.message.reply_text(
-        f"🔎 Recherche *{match}* sur Vinted et Vestiaire...",
+        f"🔎 Recherche *{match}* sur eBay et Vinted...",
         parse_mode="Markdown",
     )
-
     items = fetch_new(match)
     new = [i for i in items if not is_seen(i.get("id", i.get("url", "")))]
-
     if not new:
         await update.message.reply_text(
-            f"⚠️ Aucun nouvel article pour *{match}* pour le moment.\n"
-            f"_Active la surveillance avec /watch pour les alertes automatiques_",
+            f"⚠️ Aucun nouvel article pour *{match}*.\n"
+            f"_Active /watch pour les alertes automatiques_",
             parse_mode="Markdown",
         )
         return
-
     await update.message.reply_text(
-        f"🔔 *{len(new)} article(s) trouvé(s)* pour *{match}*",
+        f"🔔 *{len(new)} article(s)* pour *{match}*",
         parse_mode="Markdown",
     )
-
     for item in new[:10]:
         mark_seen(item.get("id", item.get("url", "")))
         await send_alert(context.bot, item)
@@ -270,8 +253,7 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_marques(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"🏷️ *{len(BRANDS)} maisons surveillées*\n\n"
-        "👇 Clique pour une recherche immédiate",
+        f"🏷️ *{len(BRANDS)} maisons surveillées*\n\n👇 Clique pour rechercher",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(brand_buttons()),
     )
@@ -284,7 +266,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "└──────────────────────────────┘\n\n"
         f"📡 *Surveillance* : {status}\n"
         f"🕐 {datetime.now().strftime('%d/%m/%Y à %H:%M')}\n\n"
-        f"📦 Vinted · Vestiaire Collective\n"
+        f"📦 eBay · Vinted\n"
         f"💶 {MIN_PRICE}€ – {MAX_PRICE}€\n"
         f"🏷️ {len(BRANDS)} maisons\n"
         f"⏱️ Check toutes les {WATCH_INTERVAL//60} min",
@@ -302,18 +284,38 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏷️ /marques — Liste cliquable\n"
         "📊 /status — État du bot\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 *Comment ça marche :*\n\n"
-        "Lance `/watch` — le bot surveille Vinted\n"
-        "et Vestiaire toutes les 5 min.\n"
-        "Dès qu'un article correspondant à tes\n"
-        "critères apparaît → tu reçois une alerte\n"
-        "avec le nom, la marque, le prix et le lien.",
+        "💡 Lance /watch — le bot surveille eBay\n"
+        "et Vinted toutes les 5 min.\n"
+        "Dès qu'un article apparaît → alerte\n"
+        "avec nom, marque, prix et lien.",
         parse_mode="Markdown",
     )
 
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔬 Diagnostic en cours...", parse_mode="Markdown")
+    brand = "Tom Ford"
+    lines = [f"🔬 *Diagnostic — {brand}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+    for name, fn in [("eBay", fetch_ebay_new), ("Vinted", fetch_vinted_new)]:
+        try:
+            res = fn(brand)
+            if res:
+                s = res[0]
+                lines.append(
+                    f"✅ *{name}* : {len(res)} article(s)\n"
+                    f"   📌 {s.get('title','')[:40]}…\n"
+                    f"   💰 {s.get('price')}€\n"
+                    f"   🔗 {s.get('url','')[:50]}"
+                )
+            else:
+                lines.append(f"⚠️ *{name}* : 0 résultat")
+        except Exception as e:
+            lines.append(f"❌ *{name}* : `{str(e)[:50]}`")
+    lines.append(f"\n🕐 {datetime.now().strftime('%H:%M:%S')}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
 
 # ──────────────────────────────────────────
-# CALLBACKS BOUTONS
+# CALLBACKS
 # ──────────────────────────────────────────
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -327,9 +329,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             task = asyncio.create_task(watch_loop(context.bot))
             _watch_task["task"] = task
         await q.message.reply_text(
-            "✅ *Surveillance activée*\n\n"
-            f"Je surveille {len(BRANDS)} marques.\n"
-            "Tu recevras une alerte dès qu'un nouvel article apparaît.",
+            f"✅ *Surveillance activée*\n{len(BRANDS)} marques surveillées.",
             parse_mode="Markdown",
         )
 
@@ -337,15 +337,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _watching["active"] = False
         if _watch_task.get("task"):
             _watch_task["task"].cancel()
-        await q.message.reply_text(
-            "⏹️ *Surveillance désactivée*\n\n"
-            "Utilise /watch pour la réactiver.",
-            parse_mode="Markdown",
-        )
+        await q.message.reply_text("⏹️ *Surveillance désactivée*", parse_mode="Markdown")
 
     elif d == "search_now":
         await q.message.reply_text(
-            "🔎 *Recherche par marque*\n\nChoisis ou tape `/chercher Hermès`",
+            "🔎 Choisis une marque :",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(brand_buttons()),
         )
@@ -362,21 +358,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         match = next((b for b in BRANDS if b == brand), None)
         if not match:
             return
-        await q.message.reply_text(
-            f"🔎 Recherche *{match}*...",
-            parse_mode="Markdown",
-        )
+        await q.message.reply_text(f"🔎 Recherche *{match}*...", parse_mode="Markdown")
         items = fetch_new(match)
         new = [i for i in items if not is_seen(i.get("id", i.get("url", "")))]
         if not new:
             await q.message.reply_text(
-                f"⚠️ Aucun nouvel article pour *{match}*.\n_Réessaie plus tard_",
-                parse_mode="Markdown",
+                f"⚠️ Aucun nouvel article pour *{match}*.", parse_mode="Markdown"
             )
             return
         await q.message.reply_text(
-            f"🔔 *{len(new)} article(s)* pour *{match}*",
-            parse_mode="Markdown",
+            f"🔔 *{len(new)} article(s)* pour *{match}*", parse_mode="Markdown"
         )
         for item in new[:10]:
             mark_seen(item.get("id", item.get("url", "")))
@@ -394,9 +385,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif d == "help":
         await q.message.reply_text(
-            "▶️ /watch — Alertes automatiques\n"
+            "▶️ /watch — Alertes auto\n"
             "⏹️ /stop — Désactiver\n"
-            "🔎 /chercher — Recherche immédiate\n"
+            "🔎 /chercher — Recherche\n"
             "🏷️ /marques — Liste\n"
             "📊 /status — État",
             parse_mode="Markdown",
@@ -429,6 +420,7 @@ async def setup_commands(app: Application):
         BotCommand("chercher", "🔎 Recherche immédiate"),
         BotCommand("marques", "🏷️ Liste des maisons"),
         BotCommand("status", "📊 État"),
+        BotCommand("test", "🔬 Diagnostic"),
         BotCommand("help", "❓ Aide"),
     ])
 
@@ -458,9 +450,10 @@ def main():
             app.add_handler(CommandHandler("chercher", cmd_chercher))
             app.add_handler(CommandHandler("watch", cmd_watch))
             app.add_handler(CommandHandler("stop", cmd_stop))
+            app.add_handler(CommandHandler("test", cmd_test))
             app.add_handler(CallbackQueryHandler(on_button))
 
-            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | Alertes temps réel")
+            logger.info(f"🚀 Bot démarré — {len(BRANDS)} marques | eBay + Vinted")
 
             app.run_polling(
                 allowed_updates=Update.ALL_TYPES,
